@@ -26,6 +26,7 @@
 #define WM_TRAY (WM_APP + 1)
 #define WM_OPENSETTINGS (WM_APP + 2)  // sent by a second launch: "open your settings window"
 #define WM_REBUILDGFX (WM_APP + 3)    // used by the tests: behave as if the graphics device was lost
+#define WM_TESTSIGNAL (WM_APP + 4)    // used by the tests: wParam 1 plays a built-in drum pattern, 0 stops it
 template <class T> static void rel(T*& p) { if (p) { p->Release(); p = 0; } }
 static float clampf(float v, float a, float b) { return v < a ? a : v > b ? b : v; }
 
@@ -218,6 +219,21 @@ static void audioRead() {
         if (pk > 1e-4f) lastLoud = lastPacket;
     }
     if (FAILED(hr)) audioClose();  // device went away; the once-a-second check reopens it
+}
+// Test machines have no sound card. This stands in for real audio: a 120 BPM kick with hats.
+static bool testSignal;
+static void feedTestSignal(double now) {
+    static double last, phase; static float buf[4800];
+    double dt = now - last; last = now;
+    if (dt <= 0 || dt > 0.5) dt = 0.016;
+    int n = (int)(aRate * dt); if (n > 4800) n = 4800;
+    for (int i = 0; i < n; i++) {
+        double t = phase + (double)i / aRate, b = fmod(t, 0.5), hb = fmod(t + 0.25, 0.5);
+        buf[i] = 0.4f * (float)(sin(6.2831853 * 55 * b) * exp(-b * 14)) + 0.1f * (float)((rand() % 2001 - 1000) / 1000.0 * exp(-hb * 60));
+    }
+    phase += (double)n / aRate;
+    an.feed(buf, n);
+    lastPacket = lastLoud = GetTickCount64();
 }
 
 // ---------------------------------------------------------------- 5x7 pixel font
@@ -529,6 +545,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_OPENSETTINGS: openSettings(); return 0;
     case WM_REBUILDGFX: gfxLost = true; return 0;
+    case WM_TESTSIGNAL: testSignal = wp != 0; return 0;
     case WM_NCHITTEST: {  // unlocked: the whole widget is a drag handle, its edges resize
         if (cfg.locked) return HTTRANSPARENT;
         RECT r; GetWindowRect(h, &r);
@@ -747,6 +764,7 @@ static double tick() {
     if (windowDirty) { windowDirty = false; applyWindow(); }
     if (layoutDirty) { layoutDirty = false; an.setColumns(cfg.cols); if (!gfxLost) layout(); }
     audioRead();
+    if (testSignal) feedTestSignal(nowSec());
     ULONGLONG tk = GetTickCount64();
     bool live = tk - lastPacket < 150;  // loopback sends nothing while nothing plays
     float quiet = live ? (tk - lastLoud) / 1000.f : 9;

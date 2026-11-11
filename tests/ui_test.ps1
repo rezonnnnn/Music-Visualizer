@@ -27,6 +27,7 @@ public class T {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint f, UIntPtr e);
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
@@ -253,6 +254,43 @@ IniSet @{ x = '-20000'; y = '-20000' }
 $back = WaitFor 'on screen' 4 { $z = WinRect $wid; $z.L -ge 0 -and $z.T -ge 0 -and $z.R -le $sw0 -and $z.B -le $sh0 }
 $z = WinRect $wid
 Check 'comes back when its saved spot is off-screen' $back "rect $($z.L),$($z.T)"
+
+# ---------------------------------------------------------------- 9b. locked, with (test) music
+function CpuPercent($secs) {   # share of one core used by the app over a few seconds
+    $script:app.Refresh(); $c0 = $script:app.TotalProcessorTime.TotalSeconds; $sw = [Diagnostics.Stopwatch]::StartNew()
+    Start-Sleep -Seconds $secs
+    $script:app.Refresh(); ($script:app.TotalProcessorTime.TotalSeconds - $c0) / $sw.Elapsed.TotalSeconds * 100
+}
+IniSet @{ locked = '1'; always_on_top = '1'; opacity = '100'; scanlines = '0'; columns = '48'; rows = '10'; readouts = '1' }
+Start-Sleep -Seconds 3
+Check 'locked and silent: nothing is drawn' ((CountColour $wid 0 240 255) -lt 30) "$(CountColour $wid 0 240 255) pixels"
+$idle = CpuPercent 4
+Check 'asleep: uses almost no CPU' ($idle -lt 1.0) ("{0:N2}% of one core" -f $idle)
+[T]::PostMessage($wid, 0x8004, [IntPtr]1, $zero) | Out-Null       # built-in test signal on
+$lit = WaitFor 'bars' 4 { (CountColour $wid 0 240 255) -gt 1500 }
+Check 'locked: wakes up and draws the music' $lit "$(CountColour $wid 0 240 255) lit pixels"
+Start-Sleep -Seconds 6
+ShotWindow $wid '6-locked-playing'
+ShotScreen '6-locked-playing-screen'
+"INFO  CPU while drawing on this machine (software graphics): {0:N1}% of one core" -f (CpuPercent 4)
+if ($AllowInput) {   # Win+D ("Show desktop") with the widget living on the desktop, behind other windows
+    IniSet @{ always_on_top = '0' }
+    Start-Sleep -Seconds 3
+    [T]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero); [T]::keybd_event(0x44, 0, 0, [UIntPtr]::Zero)
+    [T]::keybd_event(0x44, 0, 2, [UIntPtr]::Zero); [T]::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)
+    Start-Sleep -Seconds 3
+    ShotScreen '7-show-desktop'
+    Check 'on the desktop: still visible after Win+D' ((CountColour $wid 0 240 255) -gt 1500) "$(CountColour $wid 0 240 255) lit pixels"
+    [T]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero); [T]::keybd_event(0x44, 0, 0, [UIntPtr]::Zero)
+    [T]::keybd_event(0x44, 0, 2, [UIntPtr]::Zero); [T]::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)
+    Start-Sleep -Seconds 2
+    IniSet @{ always_on_top = '1' }
+    Start-Sleep -Seconds 2
+}
+[T]::PostMessage($wid, 0x8004, $zero, $zero) | Out-Null           # signal off
+Check 'fades out when the music stops' (WaitFor 'dark' 6 { (CountColour $wid 0 240 255) -lt 30 }) "$(CountColour $wid 0 240 255) pixels"
+IniSet @{ locked = '0'; always_on_top = '0' }
+Start-Sleep -Seconds 3
 
 # ---------------------------------------------------------------- 10. second launch opens settings
 if (-not $SingleLaunch) {
