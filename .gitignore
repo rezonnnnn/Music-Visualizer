@@ -1,3 +1,5 @@
 build/
+shots/
 settings.ini
 *.exe
+*.wasm

@@ -1,0 +1,96 @@
+# Builds the app from source, tests it on two Windows versions, and publishes a release when a version tag is pushed.
+name: build
+
+on:
+  push:
+    branches: [main, "v*"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: "0.17.1"
+  ZIG_SHA256: "b03f477a1943673e02aca0f570e8030dffd536ce1f45cbc4d3326ec31159562e"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig (checksum verified)
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP\zig.zip"
+          Invoke-WebRequest "https://ziglang.org/download/$env:ZIG_VERSION/zig-x86_64-windows-$env:ZIG_VERSION.zip" -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:ZIG_SHA256) { throw "Zig download has the wrong checksum: $hash" }
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\zig"
+          "$env:RUNNER_TEMP\zig\zig-x86_64-windows-$env:ZIG_VERSION" | Out-File -Append $env:GITHUB_PATH
+
+      - name: Build
+        shell: cmd
+        run: |
+          call build.cmd || exit /b 1
+          zig c++ -target x86_64-windows-gnu -O2 -fno-exceptions -fno-rtti tests/analysis_test.cpp -o build/analysis_test.exe || exit /b 1
+
+      - name: Analysis tests (tempo, columns, level)
+        shell: pwsh
+        run: |
+          python -m pip install --quiet numpy
+          python tests/run_tests.py build/analysis_test.exe
+
+      - name: Privacy check (no networking code)
+        shell: pwsh
+        run: python tests/check_imports.py build/music-visualizer.exe
+
+      - name: App tests (window, lock, settings, tray menu, recovery)
+        shell: powershell
+        run: .\tests\ui_test.ps1 -Exe build\music-visualizer.exe -Out shots -AllowInput
+
+      - name: Checksum
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path build/music-visualizer.exe) {
+            $f = Get-Item build/music-visualizer.exe
+            "$($f.Length) bytes, SHA-256 $((Get-FileHash $f -Algorithm SHA256).Hash.ToLower())" | Tee-Object build/checksum.txt
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: music-visualizer-${{ matrix.os }}
+          path: |
+            build/music-visualizer.exe
+            build/checksum.txt
+            shots/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: windows-2025
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: music-visualizer-windows-2025
+          path: dist
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $exe = "dist/build/music-visualizer.exe"
+          python tests/release_notes.py $tag | Out-File notes.md -Encoding utf8
+          "`nOne file, $((Get-Item $exe).Length) bytes, built from this tag by GitHub Actions. Not code-signed: Windows SmartScreen may ask you to confirm, and some antivirus tools may block it.`n`nSHA-256: ``$((Get-FileHash $exe -Algorithm SHA256).Hash.ToLower())``" | Out-File notes.md -Append -Encoding utf8
+          gh release create $tag $exe --title $tag --notes-file notes.md

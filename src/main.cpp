@@ -1,5 +1,6 @@
-// Music Visualizer: a tiny desktop widget that draws your speaker output as
-// neon segments. One file, one thread, no runtime. See README.md.
+// Music Visualizer: a tiny desktop widget that draws your speaker output as neon segments.
+// One thread, no runtime. This file is the Windows side (audio capture, drawing, window, settings);
+// the signal analysis is in analysis.h. See README.md.
 #define WIN32_LEAN_AND_MEAN
 #define UNICODE
 #define _UNICODE
@@ -18,14 +19,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "analysis.h"
 
-#define FFT_N 2048
-#define RING 4096
-#define MAXC 96
+#define APP_VERSION L"0.3.0"
+#define MAXC mv::MAXC
 #define WM_TRAY (WM_APP + 1)
-#define WM_OPENSETTINGS (WM_APP + 2)
+#define WM_OPENSETTINGS (WM_APP + 2)  // sent by a second launch: "open your settings window"
+#define WM_REBUILDGFX (WM_APP + 3)    // used by the tests: behave as if the graphics device was lost
 template <class T> static void rel(T*& p) { if (p) { p->Release(); p = 0; } }
 static float clampf(float v, float a, float b) { return v < a ? a : v > b ? b : v; }
+
+static mv::Analyzer an;
 
 // ---------------------------------------------------------------- settings
 struct Cfg {
@@ -34,7 +38,7 @@ struct Cfg {
     int x, y, w, h;  // window rectangle in pixels; w <= 0 means "pick a default spot"
 };
 static Cfg cfg;
-static wchar_t iniPath[MAX_PATH];
+static wchar_t iniPath[MAX_PATH + 32];
 static FILETIME iniTime;
 
 static const char DEFAULT_INI[] =
@@ -56,6 +60,21 @@ static const char DEFAULT_INI[] =
     "always_on_top=0\r\n"
     "locked=0\r\n";
 
+// Portable if a settings.ini sits next to the .exe; otherwise settings live in the user's AppData folder,
+// which is always writable (a Program Files folder is not).
+static void findIniPath() {
+    wchar_t dir[MAX_PATH];
+    GetModuleFileNameW(0, dir, MAX_PATH);
+    wchar_t* slash = wcsrchr(dir, L'\\');
+    if (slash) slash[1] = 0;
+    lstrcpyW(iniPath, dir); lstrcatW(iniPath, L"settings.ini");
+    if (GetFileAttributesW(iniPath) != INVALID_FILE_ATTRIBUTES) return;
+    DWORD n = GetEnvironmentVariableW(L"APPDATA", dir, MAX_PATH - 40);
+    if (!n || n >= MAX_PATH - 40) return;  // no AppData: fall back to the folder of the .exe
+    lstrcatW(dir, L"\\MusicVisualizer");
+    CreateDirectoryW(dir, 0);
+    lstrcpyW(iniPath, dir); lstrcatW(iniPath, L"\\settings.ini");
+}
 static int iniInt(const wchar_t* k, int def, int lo, int hi) {
     int v = (int)GetPrivateProfileIntW(L"visualizer", k, def, iniPath);
     return v < lo ? lo : v > hi ? hi : v;
@@ -113,14 +132,29 @@ static void saveCfg() {
     iniTime = iniStamp();  // our own write is not an outside edit
 }
 
+// "Start with Windows" is the standard per-user Run entry; the registry is the single source of truth for it.
+static const wchar_t RUN_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+static bool autostartOn() {
+    return RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, L"MusicVisualizer", RRF_RT_REG_SZ, 0, 0, 0) == ERROR_SUCCESS;
+}
+static void setAutostart(bool on) {
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_SET_VALUE, &k) != ERROR_SUCCESS) return;
+    if (on) {
+        wchar_t v[MAX_PATH + 4] = L"\"";
+        GetModuleFileNameW(0, v + 1, MAX_PATH);
+        lstrcatW(v, L"\"");
+        RegSetValueExW(k, L"MusicVisualizer", 0, REG_SZ, (const BYTE*)v, (lstrlenW(v) + 1) * sizeof(wchar_t));
+    } else RegDeleteValueW(k, L"MusicVisualizer");
+    RegCloseKey(k);
+}
+
 // ---------------------------------------------------------------- audio (speaker loopback)
 static IMMDeviceEnumerator* enm;
 static IAudioClient* ac;
 static IAudioCaptureClient* cc;
-static int aFloat, aChans, aBits, aRate = 48000;
+static int aFloat, aChans, aBits, aRate;
 static wchar_t devId[300];
-static float ring[RING];
-static unsigned rpos;
 static ULONGLONG lastPacket, lastLoud;
 
 static void audioClose() { if (ac) ac->Stop(); rel(cc); rel(ac); }
@@ -137,13 +171,15 @@ static bool audioOpen() {
     if (FAILED(ac->GetMixFormat(&wf))) { audioClose(); return false; }
     aFloat = wf->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
              (wf->wFormatTag == WAVE_FORMAT_EXTENSIBLE && ((WAVEFORMATEXTENSIBLE*)wf)->SubFormat.Data1 == 3);
-    aChans = wf->nChannels; aBits = wf->wBitsPerSample; aRate = wf->nSamplesPerSec;
+    aChans = wf->nChannels; aBits = wf->wBitsPerSample;
+    int rate = (int)wf->nSamplesPerSec;
     // 1 second buffer, so the idle loop can poll four times a second without losing audio
     hr = ac->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 10000000, 0, wf, 0);
     CoTaskMemFree(wf);
     if (FAILED(hr) || FAILED(ac->GetService(__uuidof(IAudioCaptureClient), (void**)&cc)) || FAILED(ac->Start())) {
         audioClose(); return false;
     }
+    if (rate != aRate) { aRate = rate; an.init(cfg.cols, aRate); }  // a different device can run at a different rate
     return true;
 }
 static bool defaultDeviceChanged() {
@@ -157,120 +193,31 @@ static bool defaultDeviceChanged() {
 static void audioRead() {
     if (!cc) return;
     UINT32 n = 0; HRESULT hr;
+    static float mono[1024];
     while (SUCCEEDED(hr = cc->GetNextPacketSize(&n)) && n) {
         BYTE* d; UINT32 fr; DWORD fl;
         if (FAILED(cc->GetBuffer(&d, &fr, &fl, 0, 0))) break;
         float pk = 0;
         bool usable = !(fl & AUDCLNT_BUFFERFLAGS_SILENT) && ((aFloat && aBits == 32) || (!aFloat && aBits == 16));
-        for (UINT32 i = 0; i < fr; i++) {
-            float m = 0;
-            if (usable) {
-                if (aFloat) { const float* s = (const float*)d + i * aChans; for (int c = 0; c < aChans; c++) m += s[c]; }
-                else { const short* s = (const short*)d + i * aChans; for (int c = 0; c < aChans; c++) m += s[c] / 32768.f; }
-                m /= aChans;
+        for (UINT32 i = 0; i < fr;) {  // mix down to mono in blocks and hand them to the analyzer
+            int m = 0;
+            for (; i < fr && m < 1024; i++, m++) {
+                float s = 0;
+                if (usable) {
+                    if (aFloat) { const float* p = (const float*)d + (size_t)i * aChans; for (int c = 0; c < aChans; c++) s += p[c]; }
+                    else { const short* p = (const short*)d + (size_t)i * aChans; for (int c = 0; c < aChans; c++) s += p[c] / 32768.f; }
+                    s /= aChans;
+                }
+                mono[m] = s;
+                float am = fabsf(s); if (am > pk) pk = am;
             }
-            ring[rpos++ & (RING - 1)] = m;
-            float am = fabsf(m); if (am > pk) pk = am;
+            an.feed(mono, m);
         }
         cc->ReleaseBuffer(fr);
         lastPacket = GetTickCount64();
         if (pk > 1e-4f) lastLoud = lastPacket;
     }
-    if (FAILED(hr)) audioClose();  // device went away; the housekeeping tick reopens it
-}
-
-// ---------------------------------------------------------------- analysis
-static float hannW[FFT_N], cosT[FFT_N / 2], sinT[FFT_N / 2], re[FFT_N], im[FFT_N];
-static unsigned short brev[FFT_N];
-static float edge[MAXC + 1], tilt[MAXC], centerHz[MAXC];
-static float lv[MAXC], pk[MAXC];
-static float peakDb = -40, rmsDb = -99, pulse, glitch, prevLow, bpm, sinceBeat = 9;
-static float beatIv[8]; static int beatN;
-
-static void fftInit() {
-    for (int i = 0; i < FFT_N; i++) {
-        hannW[i] = 0.5f - 0.5f * cosf(6.2831853f * i / (FFT_N - 1));
-        unsigned r = 0; for (int b = 0; b < 11; b++) if (i & (1 << b)) r |= 1 << (10 - b);
-        brev[i] = (unsigned short)r;
-    }
-    for (int k = 0; k < FFT_N / 2; k++) { cosT[k] = cosf(6.2831853f * k / FFT_N); sinT[k] = -sinf(6.2831853f * k / FFT_N); }
-}
-static void bandsInit() {
-    for (int i = 0; i <= cfg.cols; i++) edge[i] = 30.f * powf(16000.f / 30.f, (float)i / cfg.cols) * FFT_N / aRate;
-    for (int i = 0; i < cfg.cols; i++) {
-        centerHz[i] = 30.f * powf(16000.f / 30.f, (i + 0.5f) / cfg.cols);
-        tilt[i] = 3.f * log2f(centerHz[i] / 1000.f);  // lift the highs so they read as loud as the bass
-    }
-}
-static void fft() {
-    for (int len = 2; len <= FFT_N; len <<= 1) {
-        int half = len >> 1, step = FFT_N / len;
-        for (int i = 0; i < FFT_N; i += len)
-            for (int j = 0; j < half; j++) {
-                float wr = cosT[j * step], wi = sinT[j * step];
-                int a = i + j, b = a + half;
-                float tr = re[b] * wr - im[b] * wi, ti = re[b] * wi + im[b] * wr;
-                re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
-            }
-    }
-}
-static void analyze(float dt, bool live) {
-    float raw[MAXC];
-    int C = cfg.cols;
-    if (!live) { for (int c = 0; c < C; c++) raw[c] = 0; rmsDb = -99; }
-    else {
-        unsigned start = rpos - FFT_N; float ss = 0;
-        for (int i = 0; i < FFT_N; i++) {
-            float s = ring[(start + i) & (RING - 1)];
-            ss += s * s; re[brev[i]] = s * hannW[i]; im[brev[i]] = 0;
-        }
-        fft();
-        float rms = sqrtf(ss / FFT_N);
-        rmsDb = rms > 1e-5f ? 20.f * log10f(rms) : -99;
-        const float norm = 1.f / ((FFT_N / 4.f) * (FFT_N / 4.f));  // full-scale sine reads 0 dB
-        float mx = -200;
-        for (int c = 0; c < C; c++) {
-            float b0 = edge[c], b1 = edge[c + 1], p;
-            if (b1 - b0 < 1.f) {  // narrower than one FFT bin: interpolate
-                float m = (b0 + b1) * 0.5f; int k = (int)m; float f = m - k;
-                p = (re[k] * re[k] + im[k] * im[k]) * (1 - f) + (re[k + 1] * re[k + 1] + im[k + 1] * im[k + 1]) * f;
-            } else {
-                int k0 = (int)b0, k1 = (int)ceilf(b1); if (k1 > FFT_N / 2) k1 = FFT_N / 2;
-                p = 0; for (int k = k0; k < k1; k++) p += re[k] * re[k] + im[k] * im[k];
-                p /= (k1 - k0);
-            }
-            raw[c] = 10.f * log10f(p * norm + 1e-20f) + tilt[c];
-            if (raw[c] > mx) mx = raw[c];
-        }
-        // automatic gain: follow the loudest band, fall 6 dB a second, never below -60 dB
-        peakDb = mx > peakDb - 6.f * dt ? mx : peakDb - 6.f * dt;
-        if (peakDb < -60) peakDb = -60;
-        for (int c = 0; c < C; c++) raw[c] = clampf((raw[c] - (peakDb - 42.f)) / 42.f, 0, 1);
-    }
-    for (int c = 0; c < C; c++) {  // fast rise, slow fall
-        float k = dt / (raw[c] > lv[c] ? 0.008f : 0.25f);
-        lv[c] += (raw[c] - lv[c]) * (k > 1 ? 1 : k);
-        pk[c] = lv[c] > pk[c] - dt * 0.35f ? lv[c] : pk[c] - dt * 0.35f;
-    }
-    int nl = 0; float low = 0;
-    for (int c = 0; c < C && centerHz[c] < 120.f; c++) { low += lv[c]; nl++; }
-    if (nl) low /= nl;
-    sinceBeat += dt;
-    if (low - prevLow > 0.08f && sinceBeat > 0.25f) {
-        if (sinceBeat < 2.f) {
-            beatIv[beatN++ & 7] = sinceBeat;
-            int n = beatN < 8 ? beatN : 8; float s[8];
-            for (int i = 0; i < n; i++) s[i] = beatIv[i];
-            for (int i = 1; i < n; i++) for (int j = i; j > 0 && s[j] < s[j - 1]; j--) { float t = s[j]; s[j] = s[j - 1]; s[j - 1] = t; }
-            float b = 60.f / s[n / 2];
-            while (b > 180) b *= 0.5f; while (b < 70) b *= 2;
-            bpm = b;
-        }
-        sinceBeat = 0; pulse = 1; glitch = 1;
-    }
-    prevLow = low;
-    pulse -= dt / 0.15f; if (pulse < 0) pulse = 0;
-    glitch -= dt / 0.09f; if (glitch < 0) glitch = 0;
+    if (FAILED(hr)) audioClose();  // device went away; the once-a-second check reopens it
 }
 
 // ---------------------------------------------------------------- 5x7 pixel font
@@ -362,14 +309,14 @@ static IDCompositionTarget* dtarget;
 static IDCompositionVisual* dvisual;
 static int winW = 1, winH = 1;
 static float dpiS = 1, fontPx = 2, barsTop, barsH;
-static bool forceDraw = true;
+static bool forceDraw = true, gfxLost;
 
 typedef HRESULT(WINAPI* D3DCompileFn)(LPCVOID, SIZE_T, LPCSTR, const void*, void*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
 
 static void makeTarget() {
     ID3D11Texture2D* bb = 0;
-    if (FAILED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb))) return;
-    dev->CreateRenderTargetView(bb, 0, &rtv);
+    if (FAILED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb))) { gfxLost = true; return; }
+    if (FAILED(dev->CreateRenderTargetView(bb, 0, &rtv))) gfxLost = true;
     bb->Release();
     D3D11_VIEWPORT vp = {0, 0, (float)winW, (float)winH, 0, 1};
     ctx->RSSetViewports(1, &vp);
@@ -386,38 +333,43 @@ static void layout() {
     if (sc && (w != winW || h != winH)) {
         winW = w; winH = h;
         rel(rtv);
-        sc->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0);
-        makeTarget();
+        if (FAILED(sc->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0))) gfxLost = true;
+        else makeTarget();
     }
     winW = w; winH = h;
     forceDraw = true;
+}
+static void gfxShutdown() {
+    if (ctx) ctx->ClearState();
+    rel(rtv); rel(cbuf); rel(dvisual); rel(dtarget); rel(dcomp); rel(sc); rel(ctx); rel(dev);
 }
 static bool gfxInit() {
     UINT fl = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_SINGLETHREADED;
     if (FAILED(D3D11CreateDevice(0, D3D_DRIVER_TYPE_HARDWARE, 0, fl, 0, 0, D3D11_SDK_VERSION, &dev, 0, &ctx)) &&
         FAILED(D3D11CreateDevice(0, D3D_DRIVER_TYPE_WARP, 0, fl, 0, 0, D3D11_SDK_VERSION, &dev, 0, &ctx))) return false;
     IDXGIDevice1* xd = 0; IDXGIAdapter* ad = 0; IDXGIFactory2* fac = 0;
-    dev->QueryInterface(__uuidof(IDXGIDevice1), (void**)&xd);
+    if (FAILED(dev->QueryInterface(__uuidof(IDXGIDevice1), (void**)&xd))) return false;
     xd->SetMaximumFrameLatency(1);
-    xd->GetAdapter(&ad);
-    ad->GetParent(__uuidof(IDXGIFactory2), (void**)&fac);
-    DXGI_SWAP_CHAIN_DESC1 d = {};
-    d.Width = winW; d.Height = winH; d.Format = DXGI_FORMAT_B8G8R8A8_UNORM; d.SampleDesc.Count = 1;
-    d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; d.BufferCount = 2; d.Scaling = DXGI_SCALING_STRETCH;
-    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL; d.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
-    HRESULT hr = fac->CreateSwapChainForComposition(dev, &d, 0, &sc);
-    fac->Release(); ad->Release();
-    if (FAILED(hr)) { xd->Release(); return false; }
+    HRESULT hr = xd->GetAdapter(&ad);
+    if (SUCCEEDED(hr)) hr = ad->GetParent(__uuidof(IDXGIFactory2), (void**)&fac);
+    if (SUCCEEDED(hr)) {
+        DXGI_SWAP_CHAIN_DESC1 d = {};
+        d.Width = winW; d.Height = winH; d.Format = DXGI_FORMAT_B8G8R8A8_UNORM; d.SampleDesc.Count = 1;
+        d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; d.BufferCount = 2; d.Scaling = DXGI_SCALING_STRETCH;
+        d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL; d.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
+        hr = fac->CreateSwapChainForComposition(dev, &d, 0, &sc);
+    }
     // the Windows compositor blends the transparent widget on the GPU
-    hr = DCompositionCreateDevice(xd, __uuidof(IDCompositionDevice), (void**)&dcomp);
-    xd->Release();
+    if (SUCCEEDED(hr)) hr = DCompositionCreateDevice(xd, __uuidof(IDCompositionDevice), (void**)&dcomp);
+    rel(fac); rel(ad); rel(xd);
     if (FAILED(hr)) return false;
-    dcomp->CreateTargetForHwnd(hwnd, TRUE, &dtarget);
-    dcomp->CreateVisual(&dvisual);
+    if (FAILED(dcomp->CreateTargetForHwnd(hwnd, TRUE, &dtarget)) || FAILED(dcomp->CreateVisual(&dvisual))) return false;
     dvisual->SetContent(sc);
     dtarget->SetRoot(dvisual);
     dcomp->Commit();
+    gfxLost = false;
     makeTarget();
+    if (gfxLost) return false;
 
     // compile the shader once, then unload the compiler to give its memory back
     HMODULE comp = LoadLibraryW(L"d3dcompiler_47.dll");
@@ -431,21 +383,22 @@ static bool gfxInit() {
               SUCCEEDED(dev->CreatePixelShader(pb->GetBufferPointer(), pb->GetBufferSize(), 0, &ps));
     rel(vb); rel(pb);
     FreeLibrary(comp);
-    if (!ok) return false;
     D3D11_BUFFER_DESC bd = {};
     bd.ByteWidth = sizeof(CB); bd.Usage = D3D11_USAGE_DYNAMIC; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    dev->CreateBuffer(&bd, 0, &cbuf);
     D3D11_RASTERIZER_DESC rd = {}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_NONE;
     ID3D11RasterizerState* rs = 0;
-    dev->CreateRasterizerState(&rd, &rs);
-    ctx->RSSetState(rs); rs->Release();
-    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ctx->VSSetShader(vs, 0, 0); ctx->PSSetShader(ps, 0, 0);
-    ctx->PSSetConstantBuffers(0, 1, &cbuf);
-    vs->Release(); ps->Release();
+    ok = ok && SUCCEEDED(dev->CreateBuffer(&bd, 0, &cbuf)) && SUCCEEDED(dev->CreateRasterizerState(&rd, &rs));
+    if (ok) {
+        ctx->RSSetState(rs);
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vs, 0, 0); ctx->PSSetShader(ps, 0, 0);
+        ctx->PSSetConstantBuffers(0, 1, &cbuf);
+    }
+    rel(rs); rel(vs); rel(ps);
     for (int g = 0; g < NGLYPH; g++) for (int r = 0; r < 7; r++) cb.font[g * 8 + r] = FONT[g][r];
-    return true;
+    forceDraw = true;
+    return ok;
 }
 static void draw(float alpha, double now) {
     static double lastText = -1; static int rightLen; static int lastLocked = -1;
@@ -456,29 +409,29 @@ static void draw(float alpha, double now) {
             rightLen = setText(cb.tr, "DOUBLE-CLICK TO LOCK");
         } else {
             setText(cb.tl, fmod(now, 1.0) < 0.5 ? "\x01 MVIZ//SEG" : "\x02 MVIZ//SEG");
-            int best = 0; for (int c = 1; c < cfg.cols; c++) if (lv[c] > lv[best]) best = c;
+            int best = 0; for (int c = 1; c < cfg.cols; c++) if (an.lv[c] > an.lv[best]) best = c;
             char b[64], f[16], bp[8];
-            float hz = centerHz[best];
+            float hz = an.centerHz[best];
             if (hz < 1000) snprintf(f, 16, "%d HZ", (int)(hz + 0.5f)); else snprintf(f, 16, "%.1f KHZ", hz / 1000);
-            if (bpm > 0) snprintf(bp, 8, "%03d", (int)(bpm + 0.5f)); else strcpy(bp, "---");
-            snprintf(b, 64, "BPM %s  PK %s  LVL %.0f DB", bp, f, rmsDb < -99 ? -99.f : rmsDb);
+            if (an.bpm > 0) snprintf(bp, 8, "%03d", (int)(an.bpm + 0.5f)); else strcpy(bp, "---");
+            snprintf(b, 64, "BPM %s  PK %s  LVL %.0f DB", bp, f, an.rmsDb < -99 ? -99.f : an.rmsDb);
             rightLen = setText(cb.tr, b);
         }
     }
     // Everything is snapped to the steps the picture can actually show (whole cells, 1/255 opacity),
     // so an unchanged picture gives identical bytes and the frame is skipped.
     float R = (float)cfg.rows;
-    bool gl = cfg.glitch && glitch > 0.3f;
+    bool gl = cfg.glitch && an.glitch > 0.3f;
     for (int c = 0; c < MAXC; c++) {
         bool on = c < cfg.cols;
-        cb.lv[c] = on ? floorf(lv[c] * R + 0.5f) / R : 0;
-        cb.pk[c] = (on && pk[c] > 0.04f) ? fmaxf(0.05f, floorf(pk[c] * R + 0.5f) / R) : 0;
+        cb.lv[c] = on ? floorf(an.lv[c] * R + 0.5f) / R : 0;
+        cb.pk[c] = (on && an.pk[c] > 0.04f) ? fmaxf(0.05f, floorf(an.pk[c] * R + 0.5f) / R) : 0;
     }
     memcpy(cb.accent, cfg.col, 12); cb.accent[3] = floorf(clampf(alpha, 0, 1) * 255 + 0.5f) / 255;
-    memcpy(cb.gcol, cfg.gcol, 12); cb.gcol[3] = gl ? floorf(glitch * 8) / 8 : 0;
+    memcpy(cb.gcol, cfg.gcol, 12); cb.gcol[3] = gl ? floorf(an.glitch * 8) / 8 : 0;
     cb.dims[0] = (float)winW; cb.dims[1] = (float)winH; cb.dims[2] = barsTop; cb.dims[3] = barsH;
     cb.grid[0] = (float)cfg.cols; cb.grid[1] = (float)cfg.rows; cb.grid[2] = dpiS;
-    cb.grid[3] = gl ? floorf(((rand() % 7) - 3) * glitch * dpiS) : 0;
+    cb.grid[3] = gl ? floorf(((rand() % 7) - 3) * an.glitch * dpiS) : 0;
     cb.txt[0] = floorf(12 * dpiS); cb.txt[1] = winW - floorf(12 * dpiS) - rightLen * 6 * fontPx;
     cb.txt[2] = floorf(3 * dpiS); cb.txt[3] = fontPx;
     cb.flags[0] = (float)cfg.scan; cb.flags[1] = (float)cfg.brackets; cb.flags[2] = (float)cfg.peaks;
@@ -487,33 +440,51 @@ static void draw(float alpha, double now) {
     cb.fx[2] = cfg.locked ? 0.f : 1.f;
     static CB shownCb;
     if (!forceDraw && !memcmp(&cb, &shownCb, sizeof(cb))) return;
+    if (!rtv || !cbuf) return;
     shownCb = cb; forceDraw = false;
-    if (!rtv) return;
     D3D11_MAPPED_SUBRESOURCE m;
-    if (SUCCEEDED(ctx->Map(cbuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { memcpy(m.pData, &cb, sizeof(cb)); ctx->Unmap(cbuf, 0); }
+    if (FAILED(ctx->Map(cbuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { gfxLost = true; return; }
+    memcpy(m.pData, &cb, sizeof(cb)); ctx->Unmap(cbuf, 0);
     ctx->OMSetRenderTargets(1, &rtv, 0);
     ctx->Draw(3, 0);
-    sc->Present(1, 0);
+    // a driver update, a GPU switch or waking from sleep can take the device away: it is rebuilt on the next frame
+    HRESULT hr = sc->Present(1, 0);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) gfxLost = true;
 }
 
 // ---------------------------------------------------------------- the widget window: place, lock, menu
 static NOTIFYICONDATAW nid;
-static bool running = true, cfgDirty, layoutDirty;
+static UINT msgTaskbarCreated;
+static bool running = true, cfgDirty, layoutDirty, windowDirty;
 static HWND setWnd;
 static double tick();
 static void openSettings();
 static void syncSettings();
 
+static HICON appIcon(int size) {
+    return (HICON)LoadImageW(GetModuleHandleW(0), MAKEINTRESOURCEW(1), IMAGE_ICON, size, size, 0);
+}
+static void defaultSpot() {  // bottom centre of the main screen, above the taskbar
+    MONITORINFO mi = {sizeof(mi)};
+    GetMonitorInfoW(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi);
+    float s = GetDpiForSystem() / 96.f;
+    int ww = mi.rcWork.right - mi.rcWork.left, wh = mi.rcWork.bottom - mi.rcWork.top;
+    cfg.w = (int)(760 * s) < ww ? (int)(760 * s) : ww; cfg.h = (int)(150 * s) < wh ? (int)(150 * s) : wh;
+    cfg.x = mi.rcWork.left + (ww - cfg.w) / 2; cfg.y = mi.rcWork.bottom - cfg.h - (int)(12 * s);
+    if (cfg.y < mi.rcWork.top) cfg.y = mi.rcWork.top;
+}
+// False when the saved spot is no longer on any screen (a monitor was unplugged or the layout changed).
+static bool onScreen() {
+    RECT r = {cfg.x, cfg.y, cfg.x + cfg.w, cfg.y + cfg.h}, hit;
+    HMONITOR m = MonitorFromRect(&r, MONITOR_DEFAULTTONULL);
+    if (!m) return false;
+    MONITORINFO mi = {sizeof(mi)};
+    GetMonitorInfoW(m, &mi);
+    return IntersectRect(&hit, &r, &mi.rcWork) && hit.right - hit.left >= 48 && hit.bottom - hit.top >= 48;
+}
 // Applies position, size, layer and lock state to the window.
 static void applyWindow() {
-    if (cfg.w <= 0 || cfg.h <= 0) {  // first run or "Reset position": bottom centre, above the taskbar
-        MONITORINFO mi = {sizeof(mi)};
-        GetMonitorInfoW(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi);
-        float s = GetDpiForSystem() / 96.f;
-        int ww = mi.rcWork.right - mi.rcWork.left;
-        cfg.w = (int)(760 * s) < ww ? (int)(760 * s) : ww; cfg.h = (int)(150 * s);
-        cfg.x = mi.rcWork.left + (ww - cfg.w) / 2; cfg.y = mi.rcWork.bottom - cfg.h - (int)(12 * s);
-    }
+    if (cfg.w <= 0 || cfg.h <= 0 || !onScreen()) defaultSpot();
     // locked: clicks pass through and it never takes focus. unlocked: it can be dragged and resized.
     LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
     ex = cfg.locked ? (ex | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE) : (ex & ~(LONG_PTR)(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE));
@@ -527,10 +498,16 @@ static void setLocked(int v) {
     cfg.locked = v;
     applyWindow(); saveCfg(); syncSettings();
 }
+static void trayTip(const wchar_t* tip) {
+    if (!lstrcmpW(nid.szTip, tip)) return;
+    lstrcpynW(nid.szTip, tip, 128);
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
 static void showMenu(HWND h) {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING | (cfg.locked ? MF_CHECKED : 0), 3, L"Lock position");
     AppendMenuW(m, MF_STRING, 2, L"Settings...");
+    AppendMenuW(m, MF_STRING | (autostartOn() ? MF_CHECKED : 0), 4, L"Start with Windows");
     AppendMenuW(m, MF_SEPARATOR, 0, 0);
     AppendMenuW(m, MF_STRING, 1, L"Quit");
     POINT p; GetCursorPos(&p);
@@ -542,25 +519,16 @@ static void showMenu(HWND h) {
     if (cmd == 1) running = false;
     else if (cmd == 2) openSettings();
     else if (cmd == 3) setLocked(!cfg.locked);
-}
-static HICON makeIcon() {
-    unsigned px[256] = {};
-    const int hts[4] = {6, 11, 8, 13};
-    for (int b = 0; b < 4; b++) for (int y = 0; y < hts[b]; y++) for (int x = 0; x < 3; x++)
-        px[(14 - y) * 16 + 1 + b * 4 + x] = 0xFF00F0FF;
-    unsigned char mask[32] = {};
-    ICONINFO ii = {}; ii.fIcon = TRUE;
-    ii.hbmColor = CreateBitmap(16, 16, 1, 32, px); ii.hbmMask = CreateBitmap(16, 16, 1, 1, mask);
-    HICON ic = CreateIconIndirect(&ii);
-    DeleteObject(ii.hbmColor); DeleteObject(ii.hbmMask);
-    return ic;
+    else if (cmd == 4) { setAutostart(!autostartOn()); syncSettings(); }
 }
 static LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == msgTaskbarCreated && msg) { Shell_NotifyIconW(NIM_ADD, &nid); return 0; }  // Explorer restarted: put the icon back
     switch (msg) {
     case WM_TRAY:
         if (lp == WM_RBUTTONUP || lp == WM_LBUTTONUP) showMenu(h);
         return 0;
     case WM_OPENSETTINGS: openSettings(); return 0;
+    case WM_REBUILDGFX: gfxLost = true; return 0;
     case WM_NCHITTEST: {  // unlocked: the whole widget is a drag handle, its edges resize
         if (cfg.locked) return HTTRANSPARENT;
         RECT r; GetWindowRect(h, &r);
@@ -591,7 +559,8 @@ static LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_WINDOWPOSCHANGING:  // locked on the desktop: stay behind every other window
         if (cfg.locked && !cfg.onTop) { WINDOWPOS* p = (WINDOWPOS*)lp; p->hwndInsertAfter = HWND_BOTTOM; p->flags &= ~SWP_NOZORDER; }
         break;
-    case WM_DISPLAYCHANGE: case WM_DPICHANGED: layoutDirty = true; return 0;
+    case WM_DISPLAYCHANGE: windowDirty = true; return 0;  // screens changed: make sure it is still on one
+    case WM_DPICHANGED: layoutDirty = true; return 0;
     case WM_DESTROY: running = false; return 0;
     }
     return DefWindowProcW(h, msg, wp, lp);
@@ -599,7 +568,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
 // ---------------------------------------------------------------- settings window
 enum { ID_COL = 10, ID_GCOL, ID_SW_COL, ID_SW_GCOL, ID_OPA, ID_COLS, ID_ROWS, ID_FPS, ID_SCAN, ID_READ, ID_BRACK,
-       ID_PEAK, ID_GLITCH, ID_HIDEFS, ID_ONTOP, ID_LOCK, ID_RESET, ID_CLOSE, ID_VAL = 100 };
+       ID_PEAK, ID_GLITCH, ID_HIDEFS, ID_ONTOP, ID_LOCK, ID_RESET, ID_CLOSE, ID_AUTOSTART, ID_VAL = 100 };
 static HFONT uiFont;
 static HBRUSH brCol, brGcol;
 static int sx(int v) { return MulDiv(v, GetDpiForSystem(), 96); }
@@ -621,8 +590,10 @@ static void check(const wchar_t* label, int x, int y, int id, int val) {
     HWND c = ctl(L"BUTTON", label, BS_AUTOCHECKBOX | WS_TABSTOP, x, y, 160, 22, id);
     SendMessageW(c, BM_SETCHECK, val ? BST_CHECKED : BST_UNCHECKED, 0);
 }
-static void syncSettings() {  // the lock can change from the menu or a double-click while the window is open
-    if (setWnd) CheckDlgButton(setWnd, ID_LOCK, cfg.locked ? BST_CHECKED : BST_UNCHECKED);
+static void syncSettings() {  // these can change from the menu or a double-click while the window is open
+    if (!setWnd) return;
+    CheckDlgButton(setWnd, ID_LOCK, cfg.locked ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(setWnd, ID_AUTOSTART, autostartOn() ? BST_CHECKED : BST_UNCHECKED);
 }
 static void pickColor(float* c, HBRUSH* br, int swatch) {
     typedef BOOL(WINAPI* ChooseFn)(CHOOSECOLORW*);
@@ -635,7 +606,7 @@ static void pickColor(float* c, HBRUSH* br, int swatch) {
     SetTimer(hwnd, 1, 16, 0);
     BOOL ok = choose(&cc);
     KillTimer(hwnd, 1);
-    if (!ok) return;
+    if (!ok || !setWnd) return;
     c[0] = GetRValue(cc.rgbResult) / 255.f; c[1] = GetGValue(cc.rgbResult) / 255.f; c[2] = GetBValue(cc.rgbResult) / 255.f;
     DeleteObject(*br); *br = brushOf(c);
     InvalidateRect(GetDlgItem(setWnd, swatch), 0, TRUE);
@@ -672,6 +643,7 @@ static LRESULT CALLBACK setProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_HIDEFS: cfg.hideFs = on; break;
         case ID_ONTOP: cfg.onTop = on; applyWindow(); break;
         case ID_LOCK: setLocked(on); return 0;
+        case ID_AUTOSTART: setAutostart(on); syncSettings(); return 0;
         case ID_RESET: cfg.w = 0; applyWindow(); break;
         case ID_CLOSE: case IDCANCEL: DestroyWindow(h); return 0;  // Esc closes too
         default: return 0;
@@ -685,7 +657,7 @@ static LRESULT CALLBACK setProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 static void openSettings() {
-    if (setWnd) { SetForegroundWindow(setWnd); return; }
+    if (setWnd) { ShowWindow(setWnd, SW_RESTORE); SetForegroundWindow(setWnd); return; }
     static bool once;
     HINSTANCE inst = GetModuleHandleW(0);
     if (!once) {
@@ -699,17 +671,19 @@ static void openSettings() {
         NONCLIENTMETRICSW ncm = {sizeof(ncm)};
         SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
         uiFont = CreateFontIndirectW(&ncm.lfMessageFont);
-        WNDCLASSW wc = {}; wc.lpfnWndProc = setProc; wc.hInstance = inst; wc.lpszClassName = L"MusicVisualizerSettings";
+        WNDCLASSEXW wc = {sizeof(wc)}; wc.lpfnWndProc = setProc; wc.hInstance = inst; wc.lpszClassName = L"MusicVisualizerSettings";
         wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1); wc.hCursor = LoadCursorW(0, IDC_ARROW);
-        RegisterClassW(&wc);
+        wc.hIcon = appIcon(GetSystemMetrics(SM_CXICON)); wc.hIconSm = appIcon(GetSystemMetrics(SM_CXSMICON));
+        RegisterClassExW(&wc);
     }
     if (brCol) DeleteObject(brCol); if (brGcol) DeleteObject(brGcol);
     brCol = brushOf(cfg.col); brGcol = brushOf(cfg.gcol);
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT r = {0, 0, sx(356), sx(372)};
+    RECT r = {0, 0, sx(356), sx(446)};
     AdjustWindowRect(&r, style, FALSE);
     setWnd = CreateWindowExW(0, L"MusicVisualizerSettings", L"Music Visualizer settings", style, CW_USEDEFAULT, CW_USEDEFAULT,
                              r.right - r.left, r.bottom - r.top, 0, 0, inst, 0);
+    if (!setWnd) return;
     ctl(L"STATIC", L"Colour", 0, 16, 18, 92, 20, -1);
     ctl(L"STATIC", L"", 0, 112, 15, 60, 24, ID_SW_COL);
     ctl(L"BUTTON", L"Choose...", WS_TABSTOP, 182, 14, 90, 26, ID_COL);
@@ -728,8 +702,11 @@ static void openSettings() {
     check(L"Beat glitch", 184, 274, ID_GLITCH, cfg.glitch);
     check(L"Scanlines", 16, 300, ID_SCAN, cfg.scan);
     check(L"Hide on fullscreen", 184, 300, ID_HIDEFS, cfg.hideFs);
-    ctl(L"BUTTON", L"Reset position", WS_TABSTOP, 16, 334, 130, 28, ID_RESET);
-    ctl(L"BUTTON", L"Close", WS_TABSTOP, 250, 334, 90, 28, ID_CLOSE);
+    check(L"Start with Windows", 16, 326, ID_AUTOSTART, autostartOn());
+    ctl(L"BUTTON", L"Reset position", WS_TABSTOP, 16, 362, 130, 28, ID_RESET);
+    ctl(L"BUTTON", L"Close", WS_TABSTOP, 250, 362, 90, 28, ID_CLOSE);
+    HWND note = ctl(L"STATIC", L"Version " APP_VERSION L". Sound is analysed on this PC only. Nothing is recorded or sent anywhere.", 0, 16, 402, 324, 36, -1);
+    EnableWindow(note, FALSE);  // greyed: it is a footnote
     ShowWindow(setWnd, SW_SHOW);
     SetForegroundWindow(setWnd);
 }
@@ -749,31 +726,36 @@ static double nowSec() {
 }
 // One frame of work. Returns how many seconds to wait before the next one, or -1 when asleep.
 static double tick() {
-    static bool active, shownWin, hiddenFs;
+    static bool active, shownWin, hiddenFs, tempoCleared;
     static float vis;
     static double last, lastHouse;
     static int houseN;
     double t = nowSec();
-    if (t - lastHouse > 1.0) {  // once a second: settings file, audio device, fullscreen check
+    if (t - lastHouse > 1.0) {  // once a second: settings file, audio device, fullscreen check, window layer
         lastHouse = t; houseN++;
         FILETIME ft = iniStamp();
         if (CompareFileTime(&ft, &iniTime)) cfgDirty = true;
         if (enm && (!ac || ((houseN & 1) && defaultDeviceChanged()))) { audioOpen(); layoutDirty = true; }
+        trayTip(ac ? L"Music Visualizer" : L"Music Visualizer - no audio device found");
         hiddenFs = cfg.hideFs && fullscreenInFront();
         // Windows can drop or refuse the on-top layer (seen right after start-up): put it back if it is wrong
         bool wantTop = cfg.onTop || !cfg.locked, isTop = (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
-        if (shownWin && wantTop != isTop) applyWindow();
+        if (shownWin && wantTop != isTop) windowDirty = true;
+        if (gfxLost) { gfxShutdown(); gfxInit(); }  // on failure gfxLost stays set and this retries next second
     }
-    if (cfgDirty) { cfgDirty = false; loadCfg(); applyWindow(); }
-    if (layoutDirty) { layoutDirty = false; layout(); bandsInit(); }
+    if (cfgDirty) { cfgDirty = false; windowDirty = true; loadCfg(); }
+    if (windowDirty) { windowDirty = false; applyWindow(); }
+    if (layoutDirty) { layoutDirty = false; an.setColumns(cfg.cols); if (!gfxLost) layout(); }
     audioRead();
     ULONGLONG tk = GetTickCount64();
     bool live = tk - lastPacket < 150;  // loopback sends nothing while nothing plays
     float quiet = live ? (tk - lastLoud) / 1000.f : 9;
+    if (quiet < 2) tempoCleared = false;
+    else if (!tempoCleared) { tempoCleared = true; an.resetTempo(); }  // the next song starts from a clean slate
     bool want = !cfg.locked || (quiet < 1.5f && !hiddenFs);  // unlocked is always visible so it can be placed
 
     if (!active) {
-        if (!want) return -1;
+        if (!want || gfxLost) return -1;
         active = true; last = nowSec();
         if (!shownWin) {  // the layer set while hidden does not always stick, so set it again once shown
             ShowWindow(hwnd, SW_SHOWNOACTIVATE); shownWin = true;
@@ -783,25 +765,17 @@ static double tick() {
     t = nowSec();
     float dt = (float)(t - last); last = t;
     if (dt > 0.1f) dt = 0.1f;
-    analyze(dt, live);
+    an.frame(dt, live);
     float k = dt / (want ? 0.1f : (hiddenFs ? 0.05f : 0.6f));
     vis += ((want ? 1.f : 0.f) - vis) * (k > 1 ? 1 : k);
+    if (gfxLost) return 0.25;
     if (!want && vis < 0.004f) {  // faded out: draw one empty frame, then stop drawing
         vis = 0; draw(0, t); active = false;
-        memset(lv, 0, sizeof(lv)); memset(pk, 0, sizeof(pk));
+        memset(an.lv, 0, sizeof(an.lv)); memset(an.pk, 0, sizeof(an.pk));
         return -1;
     }
     draw(vis * cfg.opacity / 100.f, t);
     return 1.0 / cfg.fps - (nowSec() - t) - 0.0015;
-}
-// Lets the settings window use the modern Windows control style without shipping a manifest file.
-static void enableVisualStyles() {
-    wchar_t dir[MAX_PATH];
-    GetSystemDirectoryW(dir, MAX_PATH);
-    ACTCTXW a = {sizeof(a)};
-    a.dwFlags = ACTCTX_FLAG_RESOURCE_NAME_VALID | ACTCTX_FLAG_SET_PROCESS_DEFAULT | ACTCTX_FLAG_ASSEMBLY_DIRECTORY_VALID;
-    a.lpSource = L"shell32.dll"; a.lpAssemblyDirectory = dir; a.lpResourceName = MAKEINTRESOURCEW(124);
-    CreateActCtxW(&a);
 }
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
@@ -811,31 +785,33 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
         if (other) PostMessageW(other, WM_OPENSETTINGS, 0, 0);
         return 0;
     }
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    enableVisualStyles();
-    GetModuleFileNameW(0, iniPath, MAX_PATH);
-    wchar_t* slash = wcsrchr(iniPath, L'\\');
-    lstrcpyW(slash ? slash + 1 : iniPath, L"settings.ini");
+    findIniPath();
     loadCfg();
+    if (autostartOn()) setAutostart(true);  // keeps the start-up entry pointing at this file if it was moved
+    aRate = 48000; an.init(cfg.cols, aRate);
 
     WNDCLASSW wc = {}; wc.lpfnWndProc = wndProc; wc.hInstance = inst; wc.lpszClassName = L"MusicVisualizer";
     wc.hCursor = LoadCursorW(0, IDC_SIZEALL); wc.style = CS_DBLCLKS;
     RegisterClassW(&wc);
+    msgTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     // no taskbar button; drawn by the compositor, so the window itself has no bitmap
     hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TOOLWINDOW | ((cfg.onTop || !cfg.locked) ? WS_EX_TOPMOST : 0),
                            wc.lpszClassName, L"Music Visualizer", WS_POPUP, 0, 0, 100, 100, 0, 0, inst, 0);
     SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
     applyWindow();
-    layout();
-    if (!gfxInit()) { MessageBoxW(0, L"Could not start the graphics device.", L"Music Visualizer", MB_ICONERROR); return 1; }
+    layoutDirty = false; layout();
+    if (!gfxInit()) {
+        MessageBoxW(0, L"Music Visualizer could not start its graphics.\nIt needs Direct3D 11, which every PC with Windows 10 or 11 should have.",
+                    L"Music Visualizer", MB_ICONERROR);
+        return 1;
+    }
 
     CoInitializeEx(0, COINIT_APARTMENTTHREADED);
     CoCreateInstance(__uuidof(MMDeviceEnumerator), 0, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&enm);
     if (enm) audioOpen();
-    fftInit(); bandsInit();
 
     nid.cbSize = sizeof(nid); nid.hWnd = hwnd; nid.uID = 1; nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    nid.uCallbackMessage = WM_TRAY; nid.hIcon = makeIcon();
+    nid.uCallbackMessage = WM_TRAY; nid.hIcon = appIcon(GetSystemMetrics(SM_CXSMICON));
     lstrcpyW(nid.szTip, L"Music Visualizer");
     Shell_NotifyIconW(NIM_ADD, &nid);
 
@@ -848,13 +824,16 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
         }
         double wait = tick();
         if (wait < 0) MsgWaitForMultipleObjects(0, 0, FALSE, 250, QS_ALLINPUT);  // asleep: 4 wake-ups a second
-        else if (wait > 0.001 && timer) {  // sleep out the rest of the frame, waking early for input
-            LARGE_INTEGER due; due.QuadPart = -(LONGLONG)(wait * 1e7);
-            SetWaitableTimer(timer, &due, 0, 0, 0, FALSE);
-            MsgWaitForMultipleObjects(1, &timer, FALSE, 100, QS_ALLINPUT);
+        else if (wait > 0.001) {  // sleep out the rest of the frame, waking early for input
+            if (timer) {
+                LARGE_INTEGER due; due.QuadPart = -(LONGLONG)(wait * 1e7);
+                SetWaitableTimer(timer, &due, 0, 0, 0, FALSE);
+                MsgWaitForMultipleObjects(1, &timer, FALSE, 300, QS_ALLINPUT);
+            } else MsgWaitForMultipleObjects(0, 0, FALSE, (DWORD)(wait * 1000), QS_ALLINPUT);
         }
     }
     Shell_NotifyIconW(NIM_DELETE, &nid);
     audioClose();
+    gfxShutdown();
     return 0;
 }
