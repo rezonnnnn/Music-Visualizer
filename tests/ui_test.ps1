@@ -301,9 +301,8 @@ if ($AllowInput) {   # the widget living on the desktop, behind other windows, a
     "INFO  window order, front to back: $([T]::ZOrder($wid))"
     [T]::ShowWindow($front, 6) | Out-Null          # minimise the window in front (the test console)
     Start-Sleep -Seconds 2
-    $clear = CountColour $wid 0 240 255
     ShotScreen '7-on-desktop'
-    Check 'on the desktop: visible when nothing covers it' ($clear -gt 1500) "$clear lit pixels"
+    Check 'on the desktop: visible when nothing covers it' (WaitFor 'lit' 4 { (CountColour $wid 0 240 255) -gt 1500 }) ''
     [T]::ShowWindow($front, 9) | Out-Null          # bring it back
     Start-Sleep -Seconds 2
     Check 'on the desktop: stays behind other windows' ([T]::IsBehind($wid, $front)) "window order: $([T]::ZOrder($wid))"
@@ -312,7 +311,7 @@ if ($AllowInput) {   # the widget living on the desktop, behind other windows, a
     Start-Sleep -Seconds 3
     ShotScreen '8-show-desktop'
     "INFO  after Win+D, front to back: $([T]::ZOrder($wid))"
-    Check 'on the desktop: still visible after Win+D' ((CountColour $wid 0 240 255) -gt 1500) "$(CountColour $wid 0 240 255) lit pixels, minimised=$([T]::IsIconic($wid))"
+    Check 'on the desktop: still visible after Win+D' (WaitFor 'lit' 4 { (CountColour $wid 0 240 255) -gt 1500 }) "minimised=$([T]::IsIconic($wid))"
     [T]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero); [T]::keybd_event(0x44, 0, 0, [UIntPtr]::Zero)
     [T]::keybd_event(0x44, 0, 2, [UIntPtr]::Zero); [T]::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)
     Start-Sleep -Seconds 3
