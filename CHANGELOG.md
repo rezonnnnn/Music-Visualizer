@@ -6,6 +6,7 @@ Made ready for everyday use.
 
 - **Start with Windows**: a tick box in Settings and in the tray menu.
 - **Reliable tempo**: the BPM readout was rebuilt and is now covered by tests from 75 to 174 BPM, at loud and very quiet volumes. It shows `---` until it is sure.
+- **Stays put on the desktop**: the locked widget now survives Win+D ("Show desktop") instead of vanishing.
 - **Recovers by itself**: after a graphics driver update or reset, when a monitor is unplugged (it returns to a visible screen), and when Explorer restarts (the tray icon comes back).
 - **Settings live in your user folder** (`%APPDATA%\MusicVisualizer`), so the app works from any folder. Keep a `settings.ini` next to the `.exe` for a portable copy.
 - **Proper Windows citizen**: its own icon, version details in the file properties, and a tray tip that says when no audio device is found.
