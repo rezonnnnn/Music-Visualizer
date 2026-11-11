@@ -59,9 +59,17 @@ A `settings.ini` appears next to the `.exe` on first run. Save the file and chan
 | `glitch` | `1` | Jitter on each beat |
 | `hide_on_fullscreen` | `1` | Hide while a fullscreen app or video is in front |
 
+## Get it
+
+**[Download music-visualizer.exe](https://github.com/rezonnnnn/Music-Visualizer/releases/latest/download/music-visualizer.exe)** (98 KB), put it in any folder and double-click it. Play some music and look at the bottom of your screen. Quit from the tray icon.
+
+The file is not code-signed, so Windows SmartScreen may ask you to confirm ("More info", then "Run anyway"), and some antivirus tools may block it. If you'd rather not trust a download, build it yourself below.
+
+Windows 10 or 11, 64-bit.
+
 ## Build it
 
-There are no downloads yet, so you build it yourself. You need [Zig](https://ziglang.org/download/) (about 100 MB, unzip and go; tested with 0.17.1). No Visual Studio.
+You need [Zig](https://ziglang.org/download/) (about 100 MB, unzip and go; tested with 0.17.1). No Visual Studio.
 
 ```
 build.cmd
@@ -73,10 +81,6 @@ or directly:
 zig c++ -target x86_64-windows-gnu -O2 -fno-exceptions -fno-rtti -s -Wl,--subsystem,windows src/main.cpp -o music-visualizer.exe -ld3d11 -ldxgi -ldcomp -lole32 -luser32 -lgdi32 -lshell32
 ```
 
-Run `music-visualizer.exe`, play some music, and look at the bottom of your screen. Quit from the tray icon.
-
-Windows 10 or 11, 64-bit.
-
 ## Status
 
 This is an early version. So you know what you're getting:
@@ -84,7 +88,7 @@ This is an early version. So you know what you're getting:
 - **Tested**: the default look running over a real desktop, tempo detection on a 120 BPM track, and the numbers in the table above.
 - **Written but not yet tested**: custom settings and live reload, the tray menu, hiding for fullscreen apps, switching audio devices, and the sleep-on-silence path (so there is no idle CPU figure yet).
 - **Antivirus**: small unsigned programs that record audio and draw over the desktop can trip corporate antivirus. One did during development. Building from source lets you see exactly what runs.
-- **Next**: bring memory down (the 32 MB is the price of loading the graphics driver), skip frames when the picture hasn't changed, and publish a signed download.
+- **Next**: bring memory down (the 32 MB is the price of loading the graphics driver), skip frames when the picture hasn't changed, and sign the download.
 
 ## Licence
 
