@@ -23,6 +23,7 @@
 #define RING 4096
 #define MAXC 96
 #define WM_TRAY (WM_APP + 1)
+#define WM_OPENSETTINGS (WM_APP + 2)
 template <class T> static void rel(T*& p) { if (p) { p->Release(); p = 0; } }
 static float clampf(float v, float a, float b) { return v < a ? a : v > b ? b : v; }
 
@@ -559,6 +560,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TRAY:
         if (lp == WM_RBUTTONUP || lp == WM_LBUTTONUP) showMenu(h);
         return 0;
+    case WM_OPENSETTINGS: openSettings(); return 0;
     case WM_NCHITTEST: {  // unlocked: the whole widget is a drag handle, its edges resize
         if (cfg.locked) return HTTRANSPARENT;
         RECT r; GetWindowRect(h, &r);
@@ -698,7 +700,7 @@ static void openSettings() {
         SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
         uiFont = CreateFontIndirectW(&ncm.lfMessageFont);
         WNDCLASSW wc = {}; wc.lpfnWndProc = setProc; wc.hInstance = inst; wc.lpszClassName = L"MusicVisualizerSettings";
-        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); wc.hCursor = LoadCursorW(0, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1); wc.hCursor = LoadCursorW(0, IDC_ARROW);
         RegisterClassW(&wc);
     }
     if (brCol) DeleteObject(brCol); if (brGcol) DeleteObject(brGcol);
@@ -733,15 +735,11 @@ static void openSettings() {
 }
 
 // ---------------------------------------------------------------- main loop
+// The shell's own answer to "is a fullscreen app, game or presentation in front?"
 static bool fullscreenInFront() {
-    HWND fg = GetForegroundWindow();
-    if (!fg || fg == hwnd || fg == setWnd || fg == GetShellWindow() || fg == GetDesktopWindow()) return false;
-    wchar_t cls[32]; GetClassNameW(fg, cls, 32);
-    if (!lstrcmpW(cls, L"WorkerW") || !lstrcmpW(cls, L"Progman") || !lstrcmpW(cls, L"Shell_TrayWnd")) return false;
-    RECT r; MONITORINFO mi = {sizeof(mi)};
-    GetWindowRect(fg, &r);
-    GetMonitorInfoW(MonitorFromWindow(fg, MONITOR_DEFAULTTOPRIMARY), &mi);
-    return r.left <= mi.rcMonitor.left && r.top <= mi.rcMonitor.top && r.right >= mi.rcMonitor.right && r.bottom >= mi.rcMonitor.bottom;
+    QUERY_USER_NOTIFICATION_STATE st;
+    if (FAILED(SHQueryUserNotificationState(&st))) return false;
+    return st == QUNS_BUSY || st == QUNS_RUNNING_D3D_FULL_SCREEN || st == QUNS_PRESENTATION_MODE;
 }
 static double nowSec() {
     static LARGE_INTEGER f; LARGE_INTEGER c;
@@ -762,6 +760,9 @@ static double tick() {
         if (CompareFileTime(&ft, &iniTime)) cfgDirty = true;
         if (enm && (!ac || ((houseN & 1) && defaultDeviceChanged()))) { audioOpen(); layoutDirty = true; }
         hiddenFs = cfg.hideFs && fullscreenInFront();
+        // Windows can drop or refuse the on-top layer (seen right after start-up): put it back if it is wrong
+        bool wantTop = cfg.onTop || !cfg.locked, isTop = (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+        if (shownWin && wantTop != isTop) applyWindow();
     }
     if (cfgDirty) { cfgDirty = false; loadCfg(); applyWindow(); }
     if (layoutDirty) { layoutDirty = false; layout(); bandsInit(); }
@@ -769,12 +770,15 @@ static double tick() {
     ULONGLONG tk = GetTickCount64();
     bool live = tk - lastPacket < 150;  // loopback sends nothing while nothing plays
     float quiet = live ? (tk - lastLoud) / 1000.f : 9;
-    bool want = (quiet < 1.5f || !cfg.locked) && !hiddenFs;  // unlocked stays visible so it can be placed
+    bool want = !cfg.locked || (quiet < 1.5f && !hiddenFs);  // unlocked is always visible so it can be placed
 
     if (!active) {
         if (!want) return -1;
         active = true; last = nowSec();
-        if (!shownWin) { ShowWindow(hwnd, SW_SHOWNOACTIVATE); shownWin = true; }
+        if (!shownWin) {  // the layer set while hidden does not always stick, so set it again once shown
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE); shownWin = true;
+            applyWindow();
+        }
     }
     t = nowSec();
     float dt = (float)(t - last); last = t;
@@ -802,7 +806,11 @@ static void enableVisualStyles() {
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
     CreateMutexW(0, TRUE, L"MusicVisualizer.single");
-    if (GetLastError() == ERROR_ALREADY_EXISTS) return 0;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {  // already running: ask that copy to open its settings
+        HWND other = FindWindowW(L"MusicVisualizer", 0);
+        if (other) PostMessageW(other, WM_OPENSETTINGS, 0, 0);
+        return 0;
+    }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     enableVisualStyles();
     GetModuleFileNameW(0, iniPath, MAX_PATH);
@@ -814,7 +822,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
     wc.hCursor = LoadCursorW(0, IDC_SIZEALL); wc.style = CS_DBLCLKS;
     RegisterClassW(&wc);
     // no taskbar button; drawn by the compositor, so the window itself has no bitmap
-    hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
+    hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TOOLWINDOW | ((cfg.onTop || !cfg.locked) ? WS_EX_TOPMOST : 0),
                            wc.lpszClassName, L"Music Visualizer", WS_POPUP, 0, 0, 100, 100, 0, 0, inst, 0);
     SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
     applyWindow();
