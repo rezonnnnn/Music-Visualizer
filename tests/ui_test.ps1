@@ -28,6 +28,20 @@ public class T {
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint f, UIntPtr e);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetTopWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+  public static string ZOrder(IntPtr mine) {   // visible top-level windows from front to back
+    var sb = new StringBuilder(); int n = 0;
+    for (IntPtr w = GetTopWindow(IntPtr.Zero); w != IntPtr.Zero && n < 400; w = GetWindow(w, 2), n++) {
+      if (!IsWindowVisible(w)) continue;
+      var c = new StringBuilder(64); GetClassName(w, c, 64);
+      sb.Append(w == mine ? "[WIDGET]" : c.ToString()).Append(" > ");
+    }
+    return sb.ToString();
+  }
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
@@ -273,17 +287,32 @@ Start-Sleep -Seconds 6
 ShotWindow $wid '6-locked-playing'
 ShotScreen '6-locked-playing-screen'
 "INFO  CPU while drawing on this machine (software graphics): {0:N1}% of one core" -f (CpuPercent 4)
-if ($AllowInput) {   # Win+D ("Show desktop") with the widget living on the desktop, behind other windows
+if ($AllowInput) {   # the widget living on the desktop, behind other windows, and Win+D ("Show desktop")
     IniSet @{ always_on_top = '0' }
     Start-Sleep -Seconds 3
+    $front = [T]::GetForegroundWindow()
+    "INFO  window order, front to back: $([T]::ZOrder($wid))"
+    [T]::ShowWindow($front, 6) | Out-Null          # minimise the window in front (the test console)
+    Start-Sleep -Seconds 2
+    $clear = CountColour $wid 0 240 255
+    ShotScreen '7-on-desktop'
+    Check 'on the desktop: visible when nothing covers it' ($clear -gt 1500) "$clear lit pixels"
+    [T]::ShowWindow($front, 9) | Out-Null          # bring it back
+    Start-Sleep -Seconds 2
+    $behind = CountColour $wid 0 240 255
+    Check 'on the desktop: stays behind other windows' ($behind -lt 0.7 * $clear) "$behind lit pixels showing with a window over it, $clear without"
     [T]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero); [T]::keybd_event(0x44, 0, 0, [UIntPtr]::Zero)
     [T]::keybd_event(0x44, 0, 2, [UIntPtr]::Zero); [T]::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)
     Start-Sleep -Seconds 3
-    ShotScreen '7-show-desktop'
-    Check 'on the desktop: still visible after Win+D' ((CountColour $wid 0 240 255) -gt 1500) "$(CountColour $wid 0 240 255) lit pixels"
+    ShotScreen '8-show-desktop'
+    "INFO  after Win+D, front to back: $([T]::ZOrder($wid))"
+    Check 'on the desktop: still visible after Win+D' ((CountColour $wid 0 240 255) -gt 1500) "$(CountColour $wid 0 240 255) lit pixels, minimised=$([T]::IsIconic($wid))"
     [T]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero); [T]::keybd_event(0x44, 0, 0, [UIntPtr]::Zero)
     [T]::keybd_event(0x44, 0, 2, [UIntPtr]::Zero); [T]::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 3
+    $after = CountColour $wid 0 240 255
+    "INFO  after leaving Show desktop, front to back: $([T]::ZOrder($wid))"
+    Check 'on the desktop: goes back behind windows after Win+D' ($after -lt 0.7 * $clear) "$after lit pixels showing"
     IniSet @{ always_on_top = '1' }
     Start-Sleep -Seconds 2
 }

@@ -471,7 +471,8 @@ static void draw(float alpha, double now) {
 // ---------------------------------------------------------------- the widget window: place, lock, menu
 static NOTIFYICONDATAW nid;
 static UINT msgTaskbarCreated;
-static bool running = true, cfgDirty, layoutDirty, windowDirty;
+static bool running = true, cfgDirty, layoutDirty, windowDirty, placing;
+static double layerCheckUntil;
 static HWND setWnd;
 static double tick();
 static void openSettings();
@@ -498,6 +499,27 @@ static bool onScreen() {
     GetMonitorInfoW(m, &mi);
     return IntersectRect(&hit, &r, &mi.rcWork) && hit.right - hit.left >= 48 && hit.bottom - hit.top >= 48;
 }
+// The desktop itself is a window (the one holding the icons). "Show desktop" (Win+D) works by raising it
+// above every other window, so a widget parked at the very bottom would be covered. Instead the locked
+// widget is kept directly above the desktop window, wherever that currently is.
+static HWND desktopHost() {
+    HWND w = FindWindowW(L"Progman", 0);
+    if (w && FindWindowExW(w, 0, L"SHELLDLL_DefView", 0)) return w;
+    for (w = 0; (w = FindWindowExW(0, w, L"WorkerW", 0)) != 0;)
+        if (FindWindowExW(w, 0, L"SHELLDLL_DefView", 0)) return w;
+    return 0;
+}
+static bool onDesktopLayer() {
+    HWND host = desktopHost();
+    return !host || GetWindow(host, GW_HWNDPREV) == hwnd;
+}
+static HWND aboveDesktop() {  // the window to slot in beneath, so that we end up just above the desktop
+    HWND host = desktopHost();
+    if (!host) return HWND_BOTTOM;
+    HWND prev = GetWindow(host, GW_HWNDPREV);
+    if (prev == hwnd) prev = GetWindow(prev, GW_HWNDPREV);
+    return prev ? prev : HWND_TOP;
+}
 // Applies position, size, layer and lock state to the window.
 static void applyWindow() {
     if (cfg.w <= 0 || cfg.h <= 0 || !onScreen()) defaultSpot();
@@ -507,7 +529,10 @@ static void applyWindow() {
     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
     // while unlocked it floats on top so it can be found and placed; locked, it drops to the desktop
     bool top = cfg.onTop || !cfg.locked;
-    SetWindowPos(hwnd, top ? HWND_TOPMOST : HWND_BOTTOM, cfg.x, cfg.y, cfg.w, cfg.h, SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    placing = true;
+    if (!top) SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(hwnd, top ? HWND_TOPMOST : aboveDesktop(), cfg.x, cfg.y, cfg.w, cfg.h, SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    placing = false;
     layoutDirty = true;
 }
 static void setLocked(int v) {
@@ -573,9 +598,11 @@ static LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_TIMER: tick(); return 0;
     case WM_SIZE: layoutDirty = true; return 0;
-    case WM_WINDOWPOSCHANGING:  // locked on the desktop: stay behind every other window
-        if (cfg.locked && !cfg.onTop) { WINDOWPOS* p = (WINDOWPOS*)lp; p->hwndInsertAfter = HWND_BOTTOM; p->flags &= ~SWP_NOZORDER; }
+    case WM_WINDOWPOSCHANGING: {  // locked on the desktop: anything that tries to raise it is sent back down
+        WINDOWPOS* p = (WINDOWPOS*)lp;
+        if (cfg.locked && !cfg.onTop && !placing && !(p->flags & SWP_NOZORDER)) p->hwndInsertAfter = aboveDesktop();
         break;
+    }
     case WM_DISPLAYCHANGE: windowDirty = true; return 0;  // screens changed: make sure it is still on one
     case WM_DPICHANGED: layoutDirty = true; return 0;
     case WM_DESTROY: running = false; return 0;
@@ -741,6 +768,9 @@ static double nowSec() {
     QueryPerformanceCounter(&c);
     return (double)c.QuadPart / f.QuadPart;
 }
+static void CALLBACK onForegroundChange(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD) {
+    layerCheckUntil = nowSec() + 1.0;
+}
 // One frame of work. Returns how many seconds to wait before the next one, or -1 when asleep.
 static double tick() {
     static bool active, shownWin, hiddenFs, tempoCleared;
@@ -758,8 +788,11 @@ static double tick() {
         // Windows can drop or refuse the on-top layer (seen right after start-up): put it back if it is wrong
         bool wantTop = cfg.onTop || !cfg.locked, isTop = (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
         if (shownWin && wantTop != isTop) windowDirty = true;
+        if (shownWin && !wantTop && !onDesktopLayer()) windowDirty = true;
         if (gfxLost) { gfxShutdown(); gfxInit(); }  // on failure gfxLost stays set and this retries next second
     }
+    // the front window just changed (possibly Win+D): for the next second, re-check the layer on every pass
+    if (t < layerCheckUntil && cfg.locked && !cfg.onTop && !onDesktopLayer()) windowDirty = true;
     if (cfgDirty) { cfgDirty = false; windowDirty = true; loadCfg(); }
     if (windowDirty) { windowDirty = false; applyWindow(); }
     if (layoutDirty) { layoutDirty = false; an.setColumns(cfg.cols); if (!gfxLost) layout(); }
@@ -833,6 +866,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
     lstrcpyW(nid.szTip, L"Music Visualizer");
     Shell_NotifyIconW(NIM_ADD, &nid);
 
+    SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, 0, onForegroundChange, 0, 0, WINEVENT_OUTOFCONTEXT);
     HANDLE timer = CreateWaitableTimerExW(0, 0, 2 /*high resolution*/, TIMER_ALL_ACCESS);
     while (running) {
         MSG msg;
