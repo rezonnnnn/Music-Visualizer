@@ -1,6 +1,6 @@
 # Music Visualizer
 
-**A 121 KB music visualizer that lives quietly on your Windows desktop.**
+**A 119 KB music visualizer that lives quietly on your Windows desktop.**
 
 One `.exe`. No installer, no runtime, no browser engine. It listens to whatever your speakers are playing (Spotify, YouTube, games) and draws it as a row of soft, round-ended bars that glide with the music. Put it anywhere on your desktop, size it, lock it, and it sits behind your windows like part of the wallpaper.
 
@@ -45,7 +45,7 @@ The app reads your speaker output to draw it. That is all it does with it.
 
 | | Measured |
 |---|---|
-| Size on disk | **123,904 bytes** (one file) |
+| Size on disk | **121,856 bytes** (one file) |
 | CPU while music plays, 60 fps | **about 0.24%** of the whole CPU |
 | CPU when nothing is playing | **0.00%** |
 | GPU (Intel integrated) | about 1.5% while playing, 0% when silent |
