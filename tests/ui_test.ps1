@@ -92,7 +92,7 @@ function ShotWindow($w, $name) {
 # the reliable signal: every bar pixel shifts in the direction (new colour - old colour), whatever the backdrop.
 function GrabWidget($w) { $q = WinRect $w; Grab $q.L $q.T ($q.R - $q.L) ($q.B - $q.T) }
 # How many pixels moved in the given colour direction since the earlier capture. Sampled every 2 px.
-function CountShift($before, $w, $dr, $dg, $db) {
+function CountShift($before, $w, [double]$dr, [double]$dg, [double]$db) {
     $now = GrabWidget $w; $n = 0; $len = [Math]::Sqrt($dr * $dr + $dg * $dg + $db * $db)
     if ($now.Width -eq $before.Width -and $now.Height -eq $before.Height) {
         for ($y = 0; $y -lt $now.Height; $y += 2) { for ($x = 0; $x -lt $now.Width; $x += 2) {
