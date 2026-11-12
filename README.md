@@ -10,15 +10,13 @@ One `.exe`. No installer, no runtime, no browser engine. It listens to whatever 
 
 ## Get it
 
-**[Download music-visualizer.exe](https://github.com/rezonnnnn/Music-Visualizer/releases/latest/download/music-visualizer.exe)** (125 KB), put it in any folder and double-click it.
+There is no download for now: a signed release that passes Windows security checks is in the works. Until then, [build it yourself](#build-it) (one command, about a minute), put `music-visualizer.exe` in any folder and double-click it.
 
 1. It appears unlocked, floating on top with a frame around it. **Drag it** where you want it and **drag an edge** to resize.
 2. **Double-click it** to lock. It drops behind your windows, clicks pass straight through it, and it remembers its spot.
 3. To change anything later, use the **tray icon** (or just run the `.exe` again): Lock position, Settings, Start with Windows, Quit.
 
 ![Unlocked, ready to place](docs/unlocked.png)
-
-The file is not code-signed yet, so Windows SmartScreen may ask you to confirm ("More info", then "Run anyway"), and some antivirus tools may block it. Every release is built from this source by GitHub Actions, and the release notes carry its SHA-256 so you can check your download. If you'd rather not trust a download at all, build it yourself (below).
 
 Windows 10 or 11, 64-bit.
 

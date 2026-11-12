@@ -72,8 +72,9 @@ jobs:
             build/checksum.txt
             shots/
 
+  # Publishing is paused until releases are signed; set back to startsWith(github.ref, 'refs/tags/v') to resume.
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: false
     needs: test
     runs-on: windows-2025
     permissions:
