@@ -221,71 +221,25 @@ static void feedTestSignal(double now) {
     lastPacket = lastLoud = GetTickCount64();
 }
 
-// ---------------------------------------------------------------- 5x7 pixel font
-static const char GLYPHS[] = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-/\x01\x02";
-static const unsigned char FONT[][7] = {
-    {0, 0, 0, 0, 0, 0, 0},
-    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}, {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E},  // 0 1
-    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}, {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E},  // 2 3
-    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}, {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E},  // 4 5
-    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}, {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08},  // 6 7
-    {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}, {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C},  // 8 9
-    {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}, {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E},  // A B
-    {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E}, {0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C},  // C D
-    {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F}, {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10},  // E F
-    {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F}, {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11},  // G H
-    {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E}, {0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C},  // I J
-    {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}, {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F},  // K L
-    {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11}, {0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11},  // M N
-    {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}, {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10},  // O P
-    {0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D}, {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11},  // Q R
-    {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E}, {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04},  // S T
-    {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}, {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04},  // U V
-    {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A}, {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11},  // W X
-    {0x11, 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04}, {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F},  // Y Z
-    {0, 0, 0, 0, 0, 0x0C, 0x0C}, {0, 0, 0, 0x0E, 0, 0, 0},                                   // . -
-    {0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10},                                              // /
-    {0, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0}, {0, 0x1F, 0x11, 0x11, 0x11, 0x1F, 0},              // filled and hollow square
-};
-#define NGLYPH ((int)(sizeof(FONT) / 7))
-static int setText(unsigned* out, const char* s) {
-    int n = 0;
-    for (; *s && n < 32; s++, n++) { const char* p = strchr(GLYPHS, *s); out[n] = p ? (unsigned)(p - GLYPHS) : 0; }
-    for (int i = n; i < 32; i++) out[i] = 0;
-    return n;
-}
-
 // ---------------------------------------------------------------- drawing (one pixel shader)
 struct CB {
     float lv[MAXC];
     float accent[4];  // rgb, master opacity
     float dims[4];    // width, height, bars top, bars height
     float grid[4];    // columns, dpi scale
-    float txt[4];     // left text x, right text x, text y, font pixel size
-    float fx[4];      // unlocked
-    unsigned tl[32], tr[32];
-    unsigned font[352];
 };
 static CB cb;
 // "Breath": each column is a capsule with round ends, brightest at its top and fading towards its foot.
-// Edges are anti-aliased from the capsule's distance field. The frame and hint text show only while unlocked.
+// Edges are anti-aliased from the capsule's distance field. Nothing else is drawn: no frame, no background, no text.
 static const char SHADER[] =
-    "cbuffer C:register(b0){float4 lv[24];float4 accent;float4 dims;float4 grid;"
-    "float4 txt;float4 fx;uint4 tl[8];uint4 tr[8];uint4 font[88];};\n"
+    "cbuffer C:register(b0){float4 lv[24];float4 accent;float4 dims;float4 grid;};\n"
     "float4 VS(uint id:SV_VertexID):SV_Position{return float4(id==1?3.0:-1.0,id==2?-3.0:1.0,0,1);}\n"
-    "float textAt(float2 p,float x0,bool right){float s=txt.w;float lx=p.x-x0,ly=p.y-txt.z;\n"
-    " if(lx<0||ly<0||ly>=7*s)return 0;int ci=(int)(lx/(6*s));if(ci>=32)return 0;\n"
-    " int cx=(int)((lx-ci*6*s)/s),cy=(int)(ly/s);if(cx>4)return 0;\n"
-    " uint g=right?tr[ci>>2][ci&3]:tl[ci>>2][ci&3];uint i=g*8+cy;uint bits=font[i>>2][i&3];\n"
-    " return (float)((bits>>(4-cx))&1);}\n"
-    "float4 PS(float4 pos:SV_Position):SV_Target{float2 p=pos.xy;float W=dims.x,H=dims.y,bt=dims.z,bh=dims.w,S=grid.y;\n"
+    "float4 PS(float4 pos:SV_Position):SV_Target{float2 p=pos.xy;float W=dims.x,bt=dims.z,bh=dims.w,S=grid.y;\n"
     " float cols=grid.x,cw=W/cols;float c=clamp(floor(p.x/cw),0,cols-1);uint ci=(uint)c;float v=lv[ci>>2][ci&3];\n"
     " float bw=max(2*S,cw*0.42),r=bw*0.5,hh=max(bw,v*bh),yb=bt+bh,y0=yb-hh;\n"
     " float2 q=float2(p.x-(c+0.5)*cw,p.y-clamp(p.y,y0+r,yb-r));\n"
-    " float a=saturate(0.5-(length(q)-r))*lerp(0.55+0.4*v,0.18,saturate((p.y-y0)/hh));\n"
-    " if(fx.x>0){float th=max(1,floor(S));bool edge=p.x<th||p.x>=W-th||p.y<th||p.y>=H-th;a=max(a,edge?1.0:0.12);\n"
-    "  a=max(a,textAt(p,txt.x,false));a=max(a,0.7*textAt(p,txt.y,true));}\n"
-    " a=saturate(a)*accent.a;return float4(accent.rgb*a,a);}\n";
+    " float a=saturate(0.5-(length(q)-r))*lerp(0.55+0.4*v,0.18,saturate((p.y-y0)/hh))*accent.a;\n"
+    " return float4(accent.rgb*a,a);}\n";
 
 static HWND hwnd;
 static ID3D11Device* dev;
@@ -297,7 +251,7 @@ static IDCompositionDevice* dcomp;
 static IDCompositionTarget* dtarget;
 static IDCompositionVisual* dvisual;
 static int winW = 1, winH = 1;
-static float dpiS = 1, fontPx = 2, barsTop, barsH;
+static float dpiS = 1, barsTop, barsH;
 static bool forceDraw = true, gfxLost;
 
 typedef HRESULT(WINAPI* D3DCompileFn)(LPCVOID, SIZE_T, LPCSTR, const void*, void*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
@@ -310,14 +264,13 @@ static void makeTarget() {
     D3D11_VIEWPORT vp = {0, 0, (float)winW, (float)winH, 0, 1};
     ctx->RSSetViewports(1, &vp);
 }
-// Fits the picture to the window: a text row on top, the bars filling the rest.
+// Fits the picture to the window: the bars fill it, less a small margin.
 static void layout() {
     RECT r; GetClientRect(hwnd, &r);
     int w = r.right > 1 ? r.right : 1, h = r.bottom > 1 ? r.bottom : 1;
     dpiS = GetDpiForWindow(hwnd) / 96.f;
-    fontPx = floorf(1.5f * dpiS + 0.5f); if (fontPx < 1) fontPx = 1;
-    float pad = floorf(3 * dpiS), gap = floorf(7 * dpiS);
-    barsTop = pad + 7 * fontPx + gap;
+    float pad = floorf(3 * dpiS);
+    barsTop = pad;
     barsH = h - barsTop - pad; if (barsH < 4) barsH = 4;
     if (sc && (w != winW || h != winH)) {
         winW = w; winH = h;
@@ -385,22 +338,16 @@ static bool gfxInit() {
         ctx->PSSetConstantBuffers(0, 1, &cbuf);
     }
     rel(rs); rel(vs); rel(ps);
-    for (int g = 0; g < NGLYPH; g++) for (int r = 0; r < 7; r++) cb.font[g * 8 + r] = FONT[g][r];
     forceDraw = true;
     return ok;
 }
 static void draw(float alpha, double now) {
-    static int rightLen;
-    if (!rightLen) { setText(cb.tl, "UNLOCKED - DRAG TO MOVE"); rightLen = setText(cb.tr, "DOUBLE-CLICK TO LOCK"); }
     // Heights are snapped to whole pixels and opacity to 1/255, so an unchanged picture gives identical
     // bytes and the frame is skipped.
     for (int c = 0; c < MAXC; c++) cb.lv[c] = c < cfg.cols ? floorf(an.lv[c] * barsH + 0.5f) / barsH : 0;
     memcpy(cb.accent, cfg.col, 12); cb.accent[3] = floorf(clampf(alpha, 0, 1) * 255 + 0.5f) / 255;
     cb.dims[0] = (float)winW; cb.dims[1] = (float)winH; cb.dims[2] = barsTop; cb.dims[3] = barsH;
     cb.grid[0] = (float)cfg.cols; cb.grid[1] = dpiS;
-    cb.txt[0] = floorf(12 * dpiS); cb.txt[1] = winW - floorf(12 * dpiS) - rightLen * 6 * fontPx;
-    cb.txt[2] = floorf(3 * dpiS); cb.txt[3] = fontPx;
-    cb.fx[0] = cfg.locked ? 0.f : 1.f;
     static CB shownCb;
     if (!forceDraw && !memcmp(&cb, &shownCb, sizeof(cb))) return;
     if (!rtv || !cbuf) return;

@@ -8,7 +8,7 @@ A new look: smooth and minimal.
 - **Smooth motion**: bars glide on springs (quick up, slow down) instead of jumping between cells.
 - **Quieter defaults**: a soft white at full opacity, 32 columns. Any colour still works.
 - **Simpler settings**: rows, scanlines, readouts, brackets, peak markers, beat glitch and the glitch colour are gone with the old look. Old `settings.ini` files keep working; the unused lines are ignored.
-- The text and frame now show only while the widget is unlocked.
+- **Only the bars**: no frame, no background, no text, locked or unlocked. Unlocked and silent, it shows a row of dots so you can find and place it.
 - No download yet: releases are paused until they are signed.
 
 ## 0.3.0

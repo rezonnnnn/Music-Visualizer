@@ -12,11 +12,9 @@ One `.exe`. No installer, no runtime, no browser engine. It listens to whatever 
 
 There is no download for now: a signed release that passes Windows security checks is in the works. Until then, [build it yourself](#build-it) (one command, about a minute), put `music-visualizer.exe` in any folder and double-click it.
 
-1. It appears unlocked, floating on top with a frame around it. **Drag it** where you want it and **drag an edge** to resize.
+1. It appears unlocked, floating on top: a row of dots when nothing is playing. **Drag it** where you want it and **drag an edge** to resize.
 2. **Double-click it** to lock. It drops behind your windows, clicks pass straight through it, and it remembers its spot.
 3. To change anything later, use the **tray icon** (or just run the `.exe` again): Lock position, Settings, Start with Windows, Quit.
-
-![Unlocked, ready to place](docs/unlocked.png)
 
 Windows 10 or 11, 64-bit.
 
@@ -58,7 +56,7 @@ Measured in 15 to 20 second samples on a Core Ultra 5 235U laptop (14 threads, I
 
 How it stays that small:
 
-- **One pixel shader draws everything.** Every bar, with its round ends, soft edges and fade, is computed per pixel on the GPU in a single draw call. There are no textures and no font files: the hint text shown while unlocked uses a 5x7 pixel font stored as 42 small bit patterns.
+- **One pixel shader draws everything.** Every bar, with its round ends, soft edges and fade, is computed per pixel on the GPU in a single draw call. There are no textures and no fonts.
 - **It only draws when the picture changes.** Bar heights are snapped to whole pixels, so a frame identical to the last one is skipped.
 - **Windows does the transparency.** The widget is handed to the desktop compositor (DirectComposition), so the CPU never touches a pixel.
 - **Audio comes straight from Windows.** It reads the speaker output directly (WASAPI loopback). No virtual audio cable, no "share your screen" prompt.

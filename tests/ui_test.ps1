@@ -88,20 +88,20 @@ function ShotWindow($w, $name) {
     $bmp = Grab $q.L $q.T ($q.R - $q.L) ($q.B - $q.T)
     $bmp.Save((Join-Path $Out "$name.png")); $bmp.Dispose()
 }
-# How many pixels inside the widget are tinted with the given (saturated) colour. Sampled every 2 px.
-function CountColour($w, $cr, $cg, $cb) {
-    $q = WinRect $w; $bmp = Grab $q.L $q.T ($q.R - $q.L) ($q.B - $q.T); $n = 0
-    $tlo = [Math]::Min($cr, [Math]::Min($cg, $cb)); $tspan = [double]([Math]::Max($cr, [Math]::Max($cg, $cb)) - $tlo)
-    for ($y = 0; $y -lt $bmp.Height; $y += 2) { for ($x = 0; $x -lt $bmp.Width; $x += 2) {
-        $c = $bmp.GetPixel($x, $y)
-        # The bars are see-through (brightest at the top, fading to the foot), so a pixel is the colour mixed
-        # with whatever is behind it. Count it when it is clearly coloured and its hue matches.
-        $lo = [Math]::Min($c.R, [Math]::Min($c.G, $c.B)); $span = [Math]::Max($c.R, [Math]::Max($c.G, $c.B)) - $lo
-        if ($span -ge 60 -and [Math]::Abs(($c.R - $lo) / $span - ($cr - $tlo) / $tspan) -lt 0.3 -and
-            [Math]::Abs(($c.G - $lo) / $span - ($cg - $tlo) / $tspan) -lt 0.3 -and
-            [Math]::Abs(($c.B - $lo) / $span - ($cb - $tlo) / $tspan) -lt 0.3) { $n++ }
-    } }
-    $bmp.Dispose(); $n
+# The bars are see-through, so their colour on screen depends on what is behind them. A colour change is
+# the reliable signal: every bar pixel shifts in the direction (new colour - old colour), whatever the backdrop.
+function GrabWidget($w) { $q = WinRect $w; Grab $q.L $q.T ($q.R - $q.L) ($q.B - $q.T) }
+# How many pixels moved in the given colour direction since the earlier capture. Sampled every 2 px.
+function CountShift($before, $w, $dr, $dg, $db) {
+    $now = GrabWidget $w; $n = 0; $len = [Math]::Sqrt($dr * $dr + $dg * $dg + $db * $db)
+    if ($now.Width -eq $before.Width -and $now.Height -eq $before.Height) {
+        for ($y = 0; $y -lt $now.Height; $y += 2) { for ($x = 0; $x -lt $now.Width; $x += 2) {
+            $c = $now.GetPixel($x, $y); $o = $before.GetPixel($x, $y)
+            $r = $c.R - $o.R; $g = $c.G - $o.G; $b = $c.B - $o.B; $m = [Math]::Sqrt($r * $r + $g * $g + $b * $b)
+            if ($m -ge 20 -and ($r * $dr + $g * $dg + $b * $db) / ($m * $len) -gt 0.9) { $n++ }
+        } }
+    }
+    $now.Dispose(); $n
 }
 # How many pixels inside the widget changed between two captures a quarter of a second apart. The bars move
 # with the music and what is behind them does not, so this counts drawn bars on any wallpaper. Sampled every 2 px.
@@ -172,11 +172,13 @@ $q = WinRect $wid
 $sw0 = [T]::GetSystemMetrics(0); $sh0 = [T]::GetSystemMetrics(1)
 Check 'starts unlocked and on top' ((((ExStyle $wid) -band 0x8) -ne 0) -and (((ExStyle $wid) -band 0x20) -eq 0)) ("ex={0:X}" -f (ExStyle $wid))
 Check 'starts fully on the screen' ($q.L -ge 0 -and $q.T -ge 0 -and $q.R -le $sw0 -and $q.B -le $sh0 -and ($q.R - $q.L) -ge 240) "rect $($q.L),$($q.T) $($q.R - $q.L)x$($q.B - $q.T) on ${sw0}x${sh0}"
-IniSet @{ color = 'FF00FF' }   # the default colour is a soft white; the pixel checks need a saturated one
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 2
 ShotScreen '1-first-run'
-$cyan = CountColour $wid 255 0 255
-Check 'the widget is actually drawn' ($cyan -gt 150) "$cyan magenta pixels sampled"
+$was = GrabWidget $wid
+IniSet @{ color = 'FF00FF' }   # from the default soft white
+Start-Sleep -Seconds 3
+$drawn = CountShift $was $wid 19 -240 10; $was.Dispose()
+Check 'the widget is actually drawn' ($drawn -gt 100) "$drawn pixels took the new colour"
 
 # ---------------------------------------------------------------- 2. handles
 $cx = [int](($q.L + $q.R) / 2); $cy = [int](($q.T + $q.B) / 2)
@@ -253,6 +255,7 @@ if ($opened) {
     Check 'settings: checkboxes save' ((IniGet 'hide_on_fullscreen') -eq '0') "hide_on_fullscreen=$(IniGet 'hide_on_fullscreen')"
 
     # colour picker: type a colour into the standard Windows dialog and accept it
+    $was = GrabWidget $wid
     [T]::PostMessage($set, 0x111, [IntPtr]10, $zero) | Out-Null
     $dlgOpen = WaitFor 'colour dialog' 4 { [T]::Find([uint32]$script:app.Id, '#32770') -ne $zero }
     Check 'colour picker opens' $dlgOpen ''
@@ -266,8 +269,8 @@ if ($opened) {
         [T]::PostMessage($dlg, 0x111, [IntPtr]1, $zero) | Out-Null      # OK
         Start-Sleep -Seconds 2
         Check 'colour picker: chosen colour is saved' ((IniGet 'color') -eq 'FF0080') "ini color=$(IniGet 'color')"
-        $pink = CountColour $wid 255 0 128
-        Check 'colour picker: the widget changes colour' ($pink -gt 150) "$pink pixels in the new colour"
+        $pink = CountShift $was $wid 0 0 -127
+        Check 'colour picker: the widget changes colour' ($pink -gt 100) "$pink pixels took the new colour"
     }
     # Reset position puts it back at the default spot
     [T]::SendMessage([T]::GetDlgItem($set, 18), 0xF5, $zero, $zero) | Out-Null; Start-Sleep -Seconds 2
@@ -279,14 +282,17 @@ if ($opened) {
 }
 
 # ---------------------------------------------------------------- 7. editing the file applies live
+$was = GrabWidget $wid
 IniSet @{ color = '39FF14' }
-Check 'editing settings.ini applies within 3 s' (WaitFor 'green' 3 { (CountColour $wid 57 255 20) -gt 150 }) ''
+Check 'editing settings.ini applies within 3 s' (WaitFor 'green' 3 { (CountShift $was $wid -198 255 -108) -gt 100 }) "$(CountShift $was $wid -198 255 -108) pixels took the new colour"
+$was.Dispose(); $was = GrabWidget $wid
 
 # ---------------------------------------------------------------- 8. graphics device lost
 [T]::PostMessage($wid, 0x8003, $zero, $zero) | Out-Null
 Start-Sleep -Seconds 3
 IniSet @{ color = 'FF00FF' }
-Check 'recovers after losing the graphics device' ((-not $script:app.HasExited) -and (WaitFor 'magenta' 4 { (CountColour $wid 255 0 255) -gt 150 })) ''
+Check 'recovers after losing the graphics device' ((-not $script:app.HasExited) -and (WaitFor 'magenta' 4 { (CountShift $was $wid 198 -255 235) -gt 100 })) "$(CountShift $was $wid 198 -255 235) pixels took the new colour"
+$was.Dispose()
 
 # ---------------------------------------------------------------- 9. saved spot is off every screen
 IniSet @{ x = '-20000'; y = '-20000' }
@@ -303,7 +309,10 @@ function CpuPercent($secs) {   # share of one core used by the app over a few se
 IniSet @{ locked = '1'; always_on_top = '1'; opacity = '100'; columns = '32'; fps = '60' }
 Start-Sleep -Seconds 3
 $still = CountMoving $wid
-Check 'locked and silent: nothing is drawn' ((CountColour $wid 255 0 255) -lt 30 -and $still -lt 30) "$(CountColour $wid 255 0 255) coloured pixels, $still moving"
+$was = GrabWidget $wid
+IniSet @{ color = '39FF14' }; Start-Sleep -Seconds 2
+$tinted = CountShift $was $wid -198 255 -20; $was.Dispose()
+Check 'locked and silent: nothing is drawn' ($still -lt 30 -and $tinted -lt 30) "$still moving pixels, $tinted took a colour change"
 $idleA = CpuPercent 3; $idleB = CpuPercent 3     # two samples: asleep is a steady state, a one-off blip is not a leak
 Check 'asleep: uses almost no CPU' ([Math]::Min($idleA, $idleB) -lt 1.0) ("{0:N2}% and {1:N2}% of one core" -f $idleA, $idleB)
 [T]::PostMessage($wid, 0x8004, [IntPtr]1, $zero) | Out-Null       # built-in test signal on
@@ -366,7 +375,10 @@ if (-not $SingleLaunch) {
     Check 'portable copy starts' (StartApp $exe2) ''
     Start-Sleep -Seconds 3
     $wid = $script:wid
-    Check 'portable: uses the settings.ini next to the exe' ((CountColour $wid 255 42 109) -gt 150) ''
+    $was = GrabWidget $wid
+    IniSet @{ color = '39FF14' }   # IniSet writes the settings.ini next to this exe
+    Check 'portable: uses the settings.ini next to the exe' (WaitFor 'green' 4 { (CountShift $was $wid -198 213 -89) -gt 100 }) "$(CountShift $was $wid -198 213 -89) pixels took the new colour"
+    $was.Dispose()
     [T]::PostMessage($wid, 0xA3, [IntPtr]2, $zero) | Out-Null; Start-Sleep -Seconds 2
     Check 'portable: saves next to the exe' ((Select-String -Path (Join-Path $port 'settings.ini') -Pattern '^locked=1' -Quiet)) ''
     Check 'portable: leaves the AppData settings alone' ((Get-Item (Join-Path $appData 'settings.ini')).LastWriteTimeUtc -eq $stamp) ''
