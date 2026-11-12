@@ -160,11 +160,11 @@ $q = WinRect $wid
 $sw0 = [T]::GetSystemMetrics(0); $sh0 = [T]::GetSystemMetrics(1)
 Check 'starts unlocked and on top' ((((ExStyle $wid) -band 0x8) -ne 0) -and (((ExStyle $wid) -band 0x20) -eq 0)) ("ex={0:X}" -f (ExStyle $wid))
 Check 'starts fully on the screen' ($q.L -ge 0 -and $q.T -ge 0 -and $q.R -le $sw0 -and $q.B -le $sh0 -and ($q.R - $q.L) -ge 240) "rect $($q.L),$($q.T) $($q.R - $q.L)x$($q.B - $q.T) on ${sw0}x${sh0}"
-IniSet @{ color = '00F0FF' }   # the default colour is a soft white; the pixel checks need a saturated one
+IniSet @{ color = 'FF00FF' }   # the default colour is a soft white; the pixel checks need a saturated one
 Start-Sleep -Seconds 3
 ShotScreen '1-first-run'
-$cyan = CountColour $wid 0 240 255
-Check 'the widget is actually drawn' ($cyan -gt 150) "$cyan cyan pixels sampled"
+$cyan = CountColour $wid 255 0 255
+Check 'the widget is actually drawn' ($cyan -gt 150) "$cyan magenta pixels sampled"
 
 # ---------------------------------------------------------------- 2. handles
 $cx = [int](($q.L + $q.R) / 2); $cy = [int](($q.T + $q.B) / 2)
@@ -273,8 +273,8 @@ Check 'editing settings.ini applies within 3 s' (WaitFor 'green' 3 { (CountColou
 # ---------------------------------------------------------------- 8. graphics device lost
 [T]::PostMessage($wid, 0x8003, $zero, $zero) | Out-Null
 Start-Sleep -Seconds 3
-IniSet @{ color = '00F0FF' }
-Check 'recovers after losing the graphics device' ((-not $script:app.HasExited) -and (WaitFor 'cyan' 4 { (CountColour $wid 0 240 255) -gt 150 })) ''
+IniSet @{ color = 'FF00FF' }
+Check 'recovers after losing the graphics device' ((-not $script:app.HasExited) -and (WaitFor 'magenta' 4 { (CountColour $wid 255 0 255) -gt 150 })) ''
 
 # ---------------------------------------------------------------- 9. saved spot is off every screen
 IniSet @{ x = '-20000'; y = '-20000' }
@@ -290,12 +290,12 @@ function CpuPercent($secs) {   # share of one core used by the app over a few se
 }
 IniSet @{ locked = '1'; always_on_top = '1'; opacity = '100'; columns = '32'; fps = '60' }
 Start-Sleep -Seconds 3
-Check 'locked and silent: nothing is drawn' ((CountColour $wid 0 240 255) -lt 30) "$(CountColour $wid 0 240 255) pixels"
+Check 'locked and silent: nothing is drawn' ((CountColour $wid 255 0 255) -lt 30) "$(CountColour $wid 255 0 255) pixels"
 $idleA = CpuPercent 3; $idleB = CpuPercent 3     # two samples: asleep is a steady state, a one-off blip is not a leak
 Check 'asleep: uses almost no CPU' ([Math]::Min($idleA, $idleB) -lt 1.0) ("{0:N2}% and {1:N2}% of one core" -f $idleA, $idleB)
 [T]::PostMessage($wid, 0x8004, [IntPtr]1, $zero) | Out-Null       # built-in test signal on
-$lit = WaitFor 'bars' 4 { (CountColour $wid 0 240 255) -gt 500 }
-Check 'locked: wakes up and draws the music' $lit "$(CountColour $wid 0 240 255) lit pixels"
+$lit = WaitFor 'bars' 4 { (CountColour $wid 255 0 255) -gt 500 }
+Check 'locked: wakes up and draws the music' $lit "$(CountColour $wid 255 0 255) lit pixels"
 Start-Sleep -Seconds 6
 ShotWindow $wid '6-locked-playing'
 ShotScreen '6-locked-playing-screen'
@@ -308,7 +308,7 @@ if ($AllowInput) {   # the widget living on the desktop, behind other windows, a
     [T]::ShowWindow($front, 6) | Out-Null          # minimise the window in front (the test console)
     Start-Sleep -Seconds 2
     ShotScreen '7-on-desktop'
-    Check 'on the desktop: visible when nothing covers it' (WaitFor 'lit' 4 { (CountColour $wid 0 240 255) -gt 500 }) ''
+    Check 'on the desktop: visible when nothing covers it' (WaitFor 'lit' 4 { (CountColour $wid 255 0 255) -gt 500 }) ''
     [T]::ShowWindow($front, 9) | Out-Null          # bring it back
     Start-Sleep -Seconds 2
     Check 'on the desktop: stays behind other windows' ([T]::IsBehind($wid, $front)) "window order: $([T]::ZOrder($wid))"
@@ -317,7 +317,7 @@ if ($AllowInput) {   # the widget living on the desktop, behind other windows, a
     Start-Sleep -Seconds 3
     ShotScreen '8-show-desktop'
     "INFO  after Win+D, front to back: $([T]::ZOrder($wid))"
-    Check 'on the desktop: still visible after Win+D' (WaitFor 'lit' 4 { (CountColour $wid 0 240 255) -gt 500 }) "minimised=$([T]::IsIconic($wid))"
+    Check 'on the desktop: still visible after Win+D' (WaitFor 'lit' 4 { (CountColour $wid 255 0 255) -gt 500 }) "minimised=$([T]::IsIconic($wid))"
     [T]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero); [T]::keybd_event(0x44, 0, 0, [UIntPtr]::Zero)
     [T]::keybd_event(0x44, 0, 2, [UIntPtr]::Zero); [T]::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)
     Start-Sleep -Seconds 3
@@ -326,7 +326,7 @@ if ($AllowInput) {   # the widget living on the desktop, behind other windows, a
     Start-Sleep -Seconds 2
 }
 [T]::PostMessage($wid, 0x8004, $zero, $zero) | Out-Null           # signal off
-Check 'fades out when the music stops' (WaitFor 'dark' 6 { (CountColour $wid 0 240 255) -lt 30 }) "$(CountColour $wid 0 240 255) pixels"
+Check 'fades out when the music stops' (WaitFor 'dark' 6 { (CountColour $wid 255 0 255) -lt 30 }) "$(CountColour $wid 255 0 255) pixels"
 IniSet @{ locked = '0'; always_on_top = '0' }
 Start-Sleep -Seconds 3
 
