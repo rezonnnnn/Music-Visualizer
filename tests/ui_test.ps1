@@ -103,6 +103,18 @@ function CountColour($w, $cr, $cg, $cb) {
     } }
     $bmp.Dispose(); $n
 }
+# How many pixels inside the widget changed between two captures a quarter of a second apart. The bars move
+# with the music and what is behind them does not, so this counts drawn bars on any wallpaper. Sampled every 2 px.
+function CountMoving($w) {
+    $q = WinRect $w; $a = Grab $q.L $q.T ($q.R - $q.L) ($q.B - $q.T)
+    Start-Sleep -Milliseconds 250
+    $b = Grab $q.L $q.T ($q.R - $q.L) ($q.B - $q.T); $n = 0
+    for ($y = 0; $y -lt $a.Height; $y += 2) { for ($x = 0; $x -lt $a.Width; $x += 2) {
+        $c = $a.GetPixel($x, $y); $d = $b.GetPixel($x, $y)
+        if ([Math]::Abs($c.R - $d.R) + [Math]::Abs($c.G - $d.G) + [Math]::Abs($c.B - $d.B) -gt 40) { $n++ }
+    } }
+    $a.Dispose(); $b.Dispose(); $n
+}
 function IniPathNow { if (Test-Path (Join-Path (Split-Path $script:exeNow) 'settings.ini')) { Join-Path (Split-Path $script:exeNow) 'settings.ini' } else { Join-Path $appData 'settings.ini' } }
 function IniGet($k) { $line = Get-Content (IniPathNow) | Where-Object { $_ -match "^$k\s*=" } | Select-Object -First 1; if ($line) { ($line -split '=', 2)[1].Trim() } else { $null } }
 function IniSet($pairs) {
@@ -290,12 +302,13 @@ function CpuPercent($secs) {   # share of one core used by the app over a few se
 }
 IniSet @{ locked = '1'; always_on_top = '1'; opacity = '100'; columns = '32'; fps = '60' }
 Start-Sleep -Seconds 3
-Check 'locked and silent: nothing is drawn' ((CountColour $wid 255 0 255) -lt 30) "$(CountColour $wid 255 0 255) pixels"
+$still = CountMoving $wid
+Check 'locked and silent: nothing is drawn' ((CountColour $wid 255 0 255) -lt 30 -and $still -lt 30) "$(CountColour $wid 255 0 255) coloured pixels, $still moving"
 $idleA = CpuPercent 3; $idleB = CpuPercent 3     # two samples: asleep is a steady state, a one-off blip is not a leak
 Check 'asleep: uses almost no CPU' ([Math]::Min($idleA, $idleB) -lt 1.0) ("{0:N2}% and {1:N2}% of one core" -f $idleA, $idleB)
 [T]::PostMessage($wid, 0x8004, [IntPtr]1, $zero) | Out-Null       # built-in test signal on
-$lit = WaitFor 'bars' 4 { (CountColour $wid 255 0 255) -gt 500 }
-Check 'locked: wakes up and draws the music' $lit "$(CountColour $wid 255 0 255) lit pixels"
+$lit = WaitFor 'bars' 4 { (CountMoving $wid) -gt 150 }
+Check 'locked: wakes up and draws the music' $lit "$(CountMoving $wid) moving pixels"
 Start-Sleep -Seconds 6
 ShotWindow $wid '6-locked-playing'
 ShotScreen '6-locked-playing-screen'
@@ -308,7 +321,7 @@ if ($AllowInput) {   # the widget living on the desktop, behind other windows, a
     [T]::ShowWindow($front, 6) | Out-Null          # minimise the window in front (the test console)
     Start-Sleep -Seconds 2
     ShotScreen '7-on-desktop'
-    Check 'on the desktop: visible when nothing covers it' (WaitFor 'lit' 4 { (CountColour $wid 255 0 255) -gt 500 }) ''
+    Check 'on the desktop: visible when nothing covers it' (WaitFor 'lit' 4 { (CountMoving $wid) -gt 150 }) "$(CountMoving $wid) moving pixels"
     [T]::ShowWindow($front, 9) | Out-Null          # bring it back
     Start-Sleep -Seconds 2
     Check 'on the desktop: stays behind other windows' ([T]::IsBehind($wid, $front)) "window order: $([T]::ZOrder($wid))"
@@ -317,7 +330,7 @@ if ($AllowInput) {   # the widget living on the desktop, behind other windows, a
     Start-Sleep -Seconds 3
     ShotScreen '8-show-desktop'
     "INFO  after Win+D, front to back: $([T]::ZOrder($wid))"
-    Check 'on the desktop: still visible after Win+D' (WaitFor 'lit' 4 { (CountColour $wid 255 0 255) -gt 500 }) "minimised=$([T]::IsIconic($wid))"
+    Check 'on the desktop: still visible after Win+D' (WaitFor 'lit' 4 { (CountMoving $wid) -gt 150 }) "$(CountMoving $wid) moving pixels, minimised=$([T]::IsIconic($wid))"
     [T]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero); [T]::keybd_event(0x44, 0, 0, [UIntPtr]::Zero)
     [T]::keybd_event(0x44, 0, 2, [UIntPtr]::Zero); [T]::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)
     Start-Sleep -Seconds 3
@@ -326,7 +339,7 @@ if ($AllowInput) {   # the widget living on the desktop, behind other windows, a
     Start-Sleep -Seconds 2
 }
 [T]::PostMessage($wid, 0x8004, $zero, $zero) | Out-Null           # signal off
-Check 'fades out when the music stops' (WaitFor 'dark' 6 { (CountColour $wid 255 0 255) -lt 30 }) "$(CountColour $wid 255 0 255) pixels"
+Check 'fades out when the music stops' (WaitFor 'dark' 6 { (CountMoving $wid) -lt 30 }) "$(CountMoving $wid) moving pixels"
 IniSet @{ locked = '0'; always_on_top = '0' }
 Start-Sleep -Seconds 3
 
