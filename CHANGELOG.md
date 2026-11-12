@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0
+
+A new look: smooth and minimal.
+
+- **Breath**: the neon segment grid is replaced by soft, round-ended bars, brightest at the top and fading towards the foot.
+- **Smooth motion**: bars glide on springs (quick up, slow down) instead of jumping between cells.
+- **Quieter defaults**: a soft white at full opacity, 32 columns. Any colour still works.
+- **Simpler settings**: rows, scanlines, readouts, brackets, peak markers, beat glitch and the glitch colour are gone with the old look. Old `settings.ini` files keep working; the unused lines are ignored.
+- The text and frame now show only while the widget is unlocked.
+- No download yet: releases are paused until they are signed.
+
 ## 0.3.0
 
 Made ready for everyday use.

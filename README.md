@@ -1,8 +1,8 @@
 # Music Visualizer
 
-**A 125 KB cyberpunk music visualizer that lives on your Windows desktop.**
+**A 121 KB music visualizer that lives quietly on your Windows desktop.**
 
-One `.exe`. No installer, no runtime, no browser engine. It listens to whatever your speakers are playing (Spotify, YouTube, games) and draws it as a block of neon segments. Put it anywhere on your desktop, size it, lock it, and it sits behind your windows like part of the wallpaper.
+One `.exe`. No installer, no runtime, no browser engine. It listens to whatever your speakers are playing (Spotify, YouTube, games) and draws it as a row of soft, round-ended bars that glide with the music. Put it anywhere on your desktop, size it, lock it, and it sits behind your windows like part of the wallpaper.
 
 ![The widget, locked](docs/widget.png)
 
@@ -26,10 +26,9 @@ Windows 10 or 11, 64-bit.
 
 Everything applies as you move the controls:
 
-- **Colour** and **glitch colour**, with the standard Windows colour picker
-- **Opacity** (50% by default), **columns** (8 to 96), **rows** (4 to 16) and **frame rate** (15 to 60)
+- **Colour**, with the standard Windows colour picker (a soft white by default)
+- **Opacity**, **columns** (8 to 96, 32 by default) and **frame rate** (15 to 60)
 - **Lock position** and **Always on top** (off by default: locked, it lives on the desktop behind your windows)
-- **Readouts** (tempo, loudest frequency, level), **peak markers**, **brackets**, **beat glitch**, **scanlines**
 - **Hide on fullscreen**: steps aside for fullscreen apps, games and presentations
 - **Start with Windows**
 - **Reset position**: back to bottom centre, if you lose it
@@ -48,19 +47,19 @@ The app reads your speaker output to draw it. That is all it does with it.
 
 | | Measured |
 |---|---|
-| Size on disk | **128,512 bytes** (one file) |
-| CPU while music plays, 60 fps | **about 0.13%** of the whole CPU |
+| Size on disk | **123,904 bytes** (one file) |
+| CPU while music plays, 60 fps | **about 0.24%** of the whole CPU |
 | CPU when nothing is playing | **0.00%** |
-| GPU (Intel integrated) | about 2.8% while playing, 0% when silent |
-| Memory | 34 MB private, almost all of it the graphics driver Windows loads |
-| Source | two C++ files, about 1,100 lines, no dependencies |
+| GPU (Intel integrated) | about 1.5% while playing, 0% when silent |
+| Memory | 35 MB private, almost all of it the graphics driver Windows loads |
+| Source | two C++ files, about 1,000 lines, no dependencies |
 
-Measured in 15 to 20 second samples on a Core Ultra 5 235U laptop (14 threads, Intel integrated graphics, Windows 11, 1920x1200 at 60 Hz) with a 120 BPM test track.
+Measured in 15 to 20 second samples on a Core Ultra 5 235U laptop (14 threads, Intel integrated graphics, Windows 11, 1920x1200 at 60 Hz) with a 120 BPM test track. The silent figures were measured on version 0.3.0; the sleep behaviour is unchanged and is checked on every build.
 
 How it stays that small:
 
-- **One pixel shader draws everything.** Cells, peak markers, brackets and the text are computed per pixel on the GPU in a single draw call. There are no textures and no font files: the text uses a 5x7 pixel font stored as 42 small bit patterns.
-- **It only draws when the picture changes.** The look is made of whole cells, so many frames are identical to the last one and are skipped.
+- **One pixel shader draws everything.** Every bar, with its round ends, soft edges and fade, is computed per pixel on the GPU in a single draw call. There are no textures and no font files: the hint text shown while unlocked uses a 5x7 pixel font stored as 42 small bit patterns.
+- **It only draws when the picture changes.** Bar heights are snapped to whole pixels, so a frame identical to the last one is skipped.
 - **Windows does the transparency.** The widget is handed to the desktop compositor (DirectComposition), so the CPU never touches a pixel.
 - **Audio comes straight from Windows.** It reads the speaker output directly (WASAPI loopback). No virtual audio cable, no "share your screen" prompt.
 - **It sleeps when nothing is playing.** After 1.5 seconds of silence it fades out, stops drawing and checks for audio four times a second.
@@ -71,7 +70,7 @@ How it stays that small:
 Every change is built from scratch and tested on Windows Server 2022 and 2025 before it can be released:
 
 - **32 analysis tests**: tempo from 75 to 174 BPM at loud and very quiet volumes, at three sample rates, on a broken beat; no false tempo on noise, tones or silence; pure tones land in the right column; the level readout is accurate.
-- **48 app tests** on a real desktop: first-run placement, dragging with the mouse, double-click to lock, click-through, the tray menu, the settings window, the colour picker, Start with Windows, live reload, waking for music and sleeping on silence, staying on the desktop through Win+D ("Show desktop"), recovering from a lost graphics device, returning from an off-screen position, portable mode, and a clean exit.
+- **49 app tests** on a real desktop: first-run placement, dragging with the mouse, double-click to lock, click-through, the tray menu, the settings window, the colour picker, Start with Windows, live reload, waking for music and sleeping on silence, staying on the desktop through Win+D ("Show desktop"), recovering from a lost graphics device, returning from an off-screen position, portable mode, and a clean exit.
 - **The privacy check** above.
 
 The test machines have no sound card or GPU, so they use a built-in test signal and software graphics. Real audio and GPU numbers come from the laptop above.

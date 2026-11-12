@@ -668,7 +668,7 @@ static void openSettings() {
                              r.right - r.left, r.bottom - r.top, 0, 0, inst, 0);
     if (!setWnd) return;
     ctl(L"STATIC", L"Colour", 0, 16, 18, 92, 20, -1);
-    ctl(L"STATIC", L"", 0, 112, 15, 60, 24, ID_SW_COL);
+    ctl(L"STATIC", L"", WS_BORDER, 112, 15, 60, 24, ID_SW_COL);  // bordered: the default colour is close to the window's own
     ctl(L"BUTTON", L"Choose...", WS_TABSTOP, 182, 14, 90, 26, ID_COL);
     slider(L"Opacity %", 54, ID_OPA, 10, 100, cfg.opacity);
     slider(L"Columns", 86, ID_COLS, 8, MAXC, cfg.cols);
