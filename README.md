@@ -1,6 +1,6 @@
 # Music Visualizer
 
-**A 119 KB music visualizer that lives quietly on your Windows desktop.**
+**A 115 KB music visualizer that lives quietly on your Windows desktop.**
 
 One `.exe`. No installer, no runtime, no browser engine. It listens to whatever your speakers are playing (Spotify, YouTube, games) and draws it as a row of soft, round-ended bars that glide with the music. Put it anywhere on your desktop, size it, lock it, and it sits behind your windows like part of the wallpaper.
 
@@ -45,12 +45,12 @@ The app reads your speaker output to draw it. That is all it does with it.
 
 | | Measured |
 |---|---|
-| Size on disk | **121,856 bytes** (one file) |
+| Size on disk | **117,760 bytes** (one file) |
 | CPU while music plays, 60 fps | **about 0.24%** of the whole CPU |
 | CPU when nothing is playing | **0.00%** |
 | GPU (Intel integrated) | about 1.5% while playing, 0% when silent |
 | Memory | 35 MB private, almost all of it the graphics driver Windows loads |
-| Source | two C++ files, about 1,000 lines, no dependencies |
+| Source | two C++ files, about 870 lines, no dependencies |
 
 Measured in 15 to 20 second samples on a Core Ultra 5 235U laptop (14 threads, Intel integrated graphics, Windows 11, 1920x1200 at 60 Hz) with a 120 BPM test track. The silent figures were measured on version 0.3.0; the sleep behaviour is unchanged and is checked on every build.
 
@@ -67,7 +67,7 @@ How it stays that small:
 
 Every change is built from scratch and tested on Windows Server 2022 and 2025 before it can be released:
 
-- **32 analysis tests**: tempo from 75 to 174 BPM at loud and very quiet volumes, at three sample rates, on a broken beat; no false tempo on noise, tones or silence; pure tones land in the right column; the level readout is accurate.
+- **18 analysis tests**: music fills the bars at loud and quiet volumes, at three sample rates and from a mono file; bars glide instead of jumping, even on hard drum hits; silence draws nothing and bars sink back when the sound stops; pure tones land in the right column.
 - **49 app tests** on a real desktop: first-run placement, dragging with the mouse, double-click to lock, click-through, the tray menu, the settings window, the colour picker, Start with Windows, live reload, waking for music and sleeping on silence, staying on the desktop through Win+D ("Show desktop"), recovering from a lost graphics device, returning from an off-screen position, portable mode, and a clean exit.
 - **The privacy check** above.
 
@@ -95,9 +95,9 @@ The tests need Python with numpy: `python tests/run_tests.py build/analysis_test
 
 - **Not code-signed yet**, so expect a SmartScreen prompt, and some corporate antivirus tools remove it.
 - **Tested hardware is narrow**: one Intel laptop plus GitHub's test machines. AMD and Nvidia graphics, and setups with more than one monitor, have not been tried.
-- **Tempo is tested on generated drum tracks**, not on a library of real songs. It shows `---` when it is not sure.
+- **Very quiet music draws smaller bars**: below about -50 dB the bars reach roughly half height, so that background noise is not blown up into a full picture.
 - **Switching audio devices** (plugging in headphones) is handled in the code but not covered by a test.
-- **Memory** is 34 MB because of the graphics driver; a lighter drawing path is on the list.
+- **Memory** is 35 MB because of the graphics driver; a lighter drawing path is on the list.
 
 Found a problem? [Open an issue](https://github.com/rezonnnnn/Music-Visualizer/issues).
 

@@ -650,7 +650,7 @@ static void CALLBACK onForegroundChange(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, 
 }
 // One frame of work. Returns how many seconds to wait before the next one, or -1 when asleep.
 static double tick() {
-    static bool active, shownWin, hiddenFs, tempoCleared;
+    static bool active, shownWin, hiddenFs;
     static float vis;
     static double last, lastHouse;
     static int houseN;
@@ -678,8 +678,6 @@ static double tick() {
     ULONGLONG tk = GetTickCount64();
     bool live = tk - lastPacket < 150;  // loopback sends nothing while nothing plays
     float quiet = live ? (tk - lastLoud) / 1000.f : 9;
-    if (quiet < 2) tempoCleared = false;
-    else if (!tempoCleared) { tempoCleared = true; an.resetTempo(); }  // the next song starts from a clean slate
     bool want = !cfg.locked || (quiet < 1.5f && !hiddenFs);  // unlocked is always visible so it can be placed
 
     if (!active) {
