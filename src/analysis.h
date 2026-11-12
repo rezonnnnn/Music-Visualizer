@@ -1,5 +1,5 @@
-// Audio analysis for Music Visualizer: turns mono samples into column heights, peak markers,
-// a tempo estimate and beat pulses. No Windows code in here, so it is tested on its own
+// Audio analysis for Music Visualizer: turns mono samples into column heights, a tempo estimate
+// and beat pulses. No Windows code in here, so it is tested on its own
 // (see tests/analysis_test.cpp).
 #pragma once
 #include <math.h>
@@ -12,7 +12,6 @@ enum { FFT_N = 2048, RING = 4096, MAXC = 96, ENV_N = 1024, MAX_LAG = 400 };
 struct Analyzer {
     // ---- results, read by the drawing code
     float lv[MAXC];        // column heights, 0 to 1
-    float pk[MAXC];        // peak-hold markers, 0 to 1
     float centerHz[MAXC];  // centre frequency of each column
     float rmsDb;           // loudness of the last 43 ms, dB below full scale (-99 = silent)
     float bpm;             // tempo estimate, 0 while unknown
@@ -41,7 +40,7 @@ struct Analyzer {
             centerHz[i] = 30.f * powf(16000.f / 30.f, (i + 0.5f) / cols);
             tilt[i] = 3.f * log2f(centerHz[i] / 1000.f);     // lift the highs so they read as loud as the bass
         }
-        memset(lv, 0, sizeof(lv)); memset(pk, 0, sizeof(pk));
+        memset(lv, 0, sizeof(lv)); memset(vel, 0, sizeof(vel));
     }
     void resetTempo() {
         memset(env, 0, sizeof(env)); memset(bpmHist, 0, sizeof(bpmHist));
@@ -93,10 +92,15 @@ struct Analyzer {
             if (peakDb < -60) peakDb = -60;
             for (int c = 0; c < cols; c++) { float v = (raw[c] - (peakDb - 42.f)) / 42.f; raw[c] = v < 0 ? 0 : v > 1 ? 1 : v; }
         }
-        for (int c = 0; c < cols; c++) {  // fast rise, slow fall
-            float k = dt / (raw[c] > lv[c] ? 0.008f : 0.25f);
-            lv[c] += (raw[c] - lv[c]) * (k > 1 ? 1 : k);
-            pk[c] = lv[c] > pk[c] - dt * 0.35f ? lv[c] : pk[c] - dt * 0.35f;
+        // Each column glides to its target on a critically damped spring (quick up, slow down), so it never
+        // snaps or overshoots. Stepped in 4 ms slices to stay stable at any frame rate.
+        if (dt > 0.1f) dt = 0.1f;
+        int steps = (int)(dt / 0.004f) + 1; float h = dt / steps;
+        for (int s = 0; s < steps; s++) for (int c = 0; c < cols; c++) {
+            float w = raw[c] > lv[c] ? 38.f : 14.f;
+            vel[c] += (w * w * (raw[c] - lv[c]) - 2.f * w * vel[c]) * h;
+            lv[c] += vel[c] * h;
+            if (lv[c] < 0) { lv[c] = 0; vel[c] = 0; } else if (lv[c] > 1) { lv[c] = 1; vel[c] = 0; }
         }
         glitch -= dt / 0.09f; if (glitch < 0) glitch = 0;
     }
@@ -106,7 +110,7 @@ private:
     unsigned rpos;
     float ring[RING], hann[FFT_N], cosT[FFT_N / 2], sinT[FFT_N / 2], re[FFT_N], im[FFT_N];
     unsigned short brev[FFT_N];
-    float edge[MAXC + 1], tilt[MAXC];
+    float edge[MAXC + 1], tilt[MAXC], vel[MAXC];
     float peakDb, lpK, lpState, lowAcc, fullAcc, prevLow, prevFull, envMean;
     float env[ENV_N];      // onset strength, one value per 10 ms, newest at envPos-1
     float bpmHist[5];

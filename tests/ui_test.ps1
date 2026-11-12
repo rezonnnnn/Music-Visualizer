@@ -88,12 +88,18 @@ function ShotWindow($w, $name) {
     $bmp = Grab $q.L $q.T ($q.R - $q.L) ($q.B - $q.T)
     $bmp.Save((Join-Path $Out "$name.png")); $bmp.Dispose()
 }
-# How many pixels inside the widget are (nearly) the given pure colour. Sampled every 2 px.
+# How many pixels inside the widget are tinted with the given (saturated) colour. Sampled every 2 px.
 function CountColour($w, $cr, $cg, $cb) {
     $q = WinRect $w; $bmp = Grab $q.L $q.T ($q.R - $q.L) ($q.B - $q.T); $n = 0
+    $tlo = [Math]::Min($cr, [Math]::Min($cg, $cb)); $tspan = [double]([Math]::Max($cr, [Math]::Max($cg, $cb)) - $tlo)
     for ($y = 0; $y -lt $bmp.Height; $y += 2) { for ($x = 0; $x -lt $bmp.Width; $x += 2) {
         $c = $bmp.GetPixel($x, $y)
-        if ([Math]::Abs($c.R - $cr) -lt 40 -and [Math]::Abs($c.G - $cg) -lt 40 -and [Math]::Abs($c.B - $cb) -lt 40) { $n++ }
+        # The bars are see-through (brightest at the top, fading to the foot), so a pixel is the colour mixed
+        # with whatever is behind it. Count it when it is clearly coloured and its hue matches.
+        $lo = [Math]::Min($c.R, [Math]::Min($c.G, $c.B)); $span = [Math]::Max($c.R, [Math]::Max($c.G, $c.B)) - $lo
+        if ($span -ge 60 -and [Math]::Abs(($c.R - $lo) / $span - ($cr - $tlo) / $tspan) -lt 0.3 -and
+            [Math]::Abs(($c.G - $lo) / $span - ($cg - $tlo) / $tspan) -lt 0.3 -and
+            [Math]::Abs(($c.B - $lo) / $span - ($cb - $tlo) / $tspan) -lt 0.3) { $n++ }
     } }
     $bmp.Dispose(); $n
 }
@@ -154,7 +160,7 @@ $q = WinRect $wid
 $sw0 = [T]::GetSystemMetrics(0); $sh0 = [T]::GetSystemMetrics(1)
 Check 'starts unlocked and on top' ((((ExStyle $wid) -band 0x8) -ne 0) -and (((ExStyle $wid) -band 0x20) -eq 0)) ("ex={0:X}" -f (ExStyle $wid))
 Check 'starts fully on the screen' ($q.L -ge 0 -and $q.T -ge 0 -and $q.R -le $sw0 -and $q.B -le $sh0 -and ($q.R - $q.L) -ge 240) "rect $($q.L),$($q.T) $($q.R - $q.L)x$($q.B - $q.T) on ${sw0}x${sh0}"
-IniSet @{ opacity = '100' }
+IniSet @{ color = '00F0FF' }   # the default colour is a soft white; the pixel checks need a saturated one
 Start-Sleep -Seconds 3
 ShotScreen '1-first-run'
 $cyan = CountColour $wid 0 240 255
@@ -219,20 +225,20 @@ $set = [T]::Find([uint32]$script:app.Id, 'MusicVisualizerSettings')
 if ($opened) {
     [T]::SetWindowPos($set, [IntPtr](-1), 40, 40, 0, 0, 0x11) | Out-Null; Start-Sleep -Milliseconds 700
     ShotWindow $set '2-settings'
-    Check 'settings: Start with Windows box shows the entry' ([T]::SendMessage([T]::GetDlgItem($set, 28), 0xF0, $zero, $zero).ToInt64() -eq 1) ''
-    [T]::SendMessage([T]::GetDlgItem($set, 28), 0xF5, $zero, $zero) | Out-Null; Start-Sleep -Milliseconds 600
+    # control ids: 10 colour button, 13 columns, 14 frames/sec, 15 hide on fullscreen, 18 reset, 19 close, 20 start with Windows
+    Check 'settings: Start with Windows box shows the entry' ([T]::SendMessage([T]::GetDlgItem($set, 20), 0xF0, $zero, $zero).ToInt64() -eq 1) ''
+    [T]::SendMessage([T]::GetDlgItem($set, 20), 0xF5, $zero, $zero) | Out-Null; Start-Sleep -Milliseconds 600
     $run = (Get-ItemProperty -Path $runKey -ErrorAction SilentlyContinue).MusicVisualizer
     Check 'settings: unticking removes the start-up entry' ($null -eq $run) "entry: $run"
 
-    $sl = [T]::GetDlgItem($set, 15)
+    $sl = [T]::GetDlgItem($set, 13)
     [T]::SendMessage($sl, 0x405, [IntPtr]1, [IntPtr]24) | Out-Null; [T]::SendMessage($set, 0x114, [IntPtr]8, $sl) | Out-Null
-    $sl = [T]::GetDlgItem($set, 16)
-    [T]::SendMessage($sl, 0x405, [IntPtr]1, [IntPtr]6) | Out-Null; [T]::SendMessage($set, 0x114, [IntPtr]8, $sl) | Out-Null
-    [T]::SendMessage([T]::GetDlgItem($set, 18), 0xF5, $zero, $zero) | Out-Null    # scanlines
-    [T]::SendMessage([T]::GetDlgItem($set, 19), 0xF5, $zero, $zero) | Out-Null    # readouts off
+    $sl = [T]::GetDlgItem($set, 14)
+    [T]::SendMessage($sl, 0x405, [IntPtr]1, [IntPtr]30) | Out-Null; [T]::SendMessage($set, 0x114, [IntPtr]8, $sl) | Out-Null
+    [T]::SendMessage([T]::GetDlgItem($set, 15), 0xF5, $zero, $zero) | Out-Null    # hide on fullscreen off
     Start-Sleep -Seconds 1
-    Check 'settings: sliders save' ((IniGet 'columns') -eq '24' -and (IniGet 'rows') -eq '6') "columns=$(IniGet 'columns') rows=$(IniGet 'rows')"
-    Check 'settings: checkboxes save' ((IniGet 'scanlines') -eq '1' -and (IniGet 'readouts') -eq '0') "scanlines=$(IniGet 'scanlines') readouts=$(IniGet 'readouts')"
+    Check 'settings: sliders save' ((IniGet 'columns') -eq '24' -and (IniGet 'fps') -eq '30') "columns=$(IniGet 'columns') fps=$(IniGet 'fps')"
+    Check 'settings: checkboxes save' ((IniGet 'hide_on_fullscreen') -eq '0') "hide_on_fullscreen=$(IniGet 'hide_on_fullscreen')"
 
     # colour picker: type a colour into the standard Windows dialog and accept it
     [T]::PostMessage($set, 0x111, [IntPtr]10, $zero) | Out-Null
@@ -252,11 +258,11 @@ if ($opened) {
         Check 'colour picker: the widget changes colour' ($pink -gt 150) "$pink pixels in the new colour"
     }
     # Reset position puts it back at the default spot
-    [T]::SendMessage([T]::GetDlgItem($set, 26), 0xF5, $zero, $zero) | Out-Null; Start-Sleep -Seconds 2
+    [T]::SendMessage([T]::GetDlgItem($set, 18), 0xF5, $zero, $zero) | Out-Null; Start-Sleep -Seconds 2
     $rr = WinRect $wid
     Check 'settings: Reset position' ($rr.L -eq $q.L -and $rr.T -eq $q.T) "rect $($rr.L),$($rr.T), default was $($q.L),$($q.T)"
     ShotScreen '4-after-settings'
-    [T]::SendMessage([T]::GetDlgItem($set, 27), 0xF5, $zero, $zero) | Out-Null
+    [T]::SendMessage([T]::GetDlgItem($set, 19), 0xF5, $zero, $zero) | Out-Null
     Check 'settings window closes' (WaitFor 'closed' 3 { [T]::Find([uint32]$script:app.Id, 'MusicVisualizerSettings') -eq $zero }) ''
 }
 
@@ -282,13 +288,13 @@ function CpuPercent($secs) {   # share of one core used by the app over a few se
     Start-Sleep -Seconds $secs
     $script:app.Refresh(); ($script:app.TotalProcessorTime.TotalSeconds - $c0) / $sw.Elapsed.TotalSeconds * 100
 }
-IniSet @{ locked = '1'; always_on_top = '1'; opacity = '100'; scanlines = '0'; columns = '48'; rows = '10'; readouts = '1' }
+IniSet @{ locked = '1'; always_on_top = '1'; opacity = '100'; columns = '32'; fps = '60' }
 Start-Sleep -Seconds 3
 Check 'locked and silent: nothing is drawn' ((CountColour $wid 0 240 255) -lt 30) "$(CountColour $wid 0 240 255) pixels"
 $idleA = CpuPercent 3; $idleB = CpuPercent 3     # two samples: asleep is a steady state, a one-off blip is not a leak
 Check 'asleep: uses almost no CPU' ([Math]::Min($idleA, $idleB) -lt 1.0) ("{0:N2}% and {1:N2}% of one core" -f $idleA, $idleB)
 [T]::PostMessage($wid, 0x8004, [IntPtr]1, $zero) | Out-Null       # built-in test signal on
-$lit = WaitFor 'bars' 4 { (CountColour $wid 0 240 255) -gt 1500 }
+$lit = WaitFor 'bars' 4 { (CountColour $wid 0 240 255) -gt 500 }
 Check 'locked: wakes up and draws the music' $lit "$(CountColour $wid 0 240 255) lit pixels"
 Start-Sleep -Seconds 6
 ShotWindow $wid '6-locked-playing'
@@ -302,7 +308,7 @@ if ($AllowInput) {   # the widget living on the desktop, behind other windows, a
     [T]::ShowWindow($front, 6) | Out-Null          # minimise the window in front (the test console)
     Start-Sleep -Seconds 2
     ShotScreen '7-on-desktop'
-    Check 'on the desktop: visible when nothing covers it' (WaitFor 'lit' 4 { (CountColour $wid 0 240 255) -gt 1500 }) ''
+    Check 'on the desktop: visible when nothing covers it' (WaitFor 'lit' 4 { (CountColour $wid 0 240 255) -gt 500 }) ''
     [T]::ShowWindow($front, 9) | Out-Null          # bring it back
     Start-Sleep -Seconds 2
     Check 'on the desktop: stays behind other windows' ([T]::IsBehind($wid, $front)) "window order: $([T]::ZOrder($wid))"
@@ -311,7 +317,7 @@ if ($AllowInput) {   # the widget living on the desktop, behind other windows, a
     Start-Sleep -Seconds 3
     ShotScreen '8-show-desktop'
     "INFO  after Win+D, front to back: $([T]::ZOrder($wid))"
-    Check 'on the desktop: still visible after Win+D' (WaitFor 'lit' 4 { (CountColour $wid 0 240 255) -gt 1500 }) "minimised=$([T]::IsIconic($wid))"
+    Check 'on the desktop: still visible after Win+D' (WaitFor 'lit' 4 { (CountColour $wid 0 240 255) -gt 500 }) "minimised=$([T]::IsIconic($wid))"
     [T]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero); [T]::keybd_event(0x44, 0, 0, [UIntPtr]::Zero)
     [T]::keybd_event(0x44, 0, 2, [UIntPtr]::Zero); [T]::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)
     Start-Sleep -Seconds 3

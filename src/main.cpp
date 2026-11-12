@@ -21,7 +21,7 @@
 #include <string.h>
 #include "analysis.h"
 
-#define APP_VERSION L"0.3.0"
+#define APP_VERSION L"0.4.0"
 #define MAXC mv::MAXC
 #define WM_TRAY (WM_APP + 1)
 #define WM_OPENSETTINGS (WM_APP + 2)  // sent by a second launch: "open your settings window"
@@ -34,8 +34,8 @@ static mv::Analyzer an;
 
 // ---------------------------------------------------------------- settings
 struct Cfg {
-    float col[3], gcol[3];
-    int cols, rows, opacity, fps, scan, readouts, brackets, glitch, peaks, hideFs, onTop, locked;
+    float col[3];
+    int cols, opacity, fps, hideFs, onTop, locked;
     int x, y, w, h;  // window rectangle in pixels; w <= 0 means "pick a default spot"
 };
 static Cfg cfg;
@@ -46,17 +46,10 @@ static const char DEFAULT_INI[] =
     "; Music Visualizer settings. Use the Settings window (tray icon), or edit this file:\r\n"
     "; changes apply within a second of saving.\r\n"
     "[visualizer]\r\n"
-    "color=00F0FF\r\n"
-    "glitch_color=FF2A6D\r\n"
-    "opacity=50\r\n"
-    "columns=48\r\n"
-    "rows=10\r\n"
+    "color=ECF0F5\r\n"
+    "opacity=100\r\n"
+    "columns=32\r\n"
     "fps=60\r\n"
-    "scanlines=0\r\n"
-    "readouts=1\r\n"
-    "brackets=1\r\n"
-    "peaks=1\r\n"
-    "glitch=1\r\n"
     "hide_on_fullscreen=1\r\n"
     "always_on_top=0\r\n"
     "locked=0\r\n";
@@ -96,17 +89,10 @@ static void loadCfg() {
         HANDLE f = CreateFileW(iniPath, GENERIC_WRITE, 0, 0, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, 0);
         if (f != INVALID_HANDLE_VALUE) { DWORD w; WriteFile(f, DEFAULT_INI, sizeof(DEFAULT_INI) - 1, &w, 0); CloseHandle(f); }
     }
-    iniColor(L"color", L"00F0FF", cfg.col);
-    iniColor(L"glitch_color", L"FF2A6D", cfg.gcol);
-    cfg.opacity = iniInt(L"opacity", 50, 10, 100);
-    cfg.cols = iniInt(L"columns", 48, 8, MAXC);
-    cfg.rows = iniInt(L"rows", 10, 4, 16);
+    iniColor(L"color", L"ECF0F5", cfg.col);
+    cfg.opacity = iniInt(L"opacity", 100, 10, 100);
+    cfg.cols = iniInt(L"columns", 32, 8, MAXC);
     cfg.fps = iniInt(L"fps", 60, 15, 60);
-    cfg.scan = iniInt(L"scanlines", 0, 0, 1);
-    cfg.readouts = iniInt(L"readouts", 1, 0, 1);
-    cfg.brackets = iniInt(L"brackets", 1, 0, 1);
-    cfg.peaks = iniInt(L"peaks", 1, 0, 1);
-    cfg.glitch = iniInt(L"glitch", 1, 0, 1);
     cfg.hideFs = iniInt(L"hide_on_fullscreen", 1, 0, 1);
     cfg.onTop = iniInt(L"always_on_top", 0, 0, 1);
     cfg.locked = iniInt(L"locked", 0, 0, 1);
@@ -124,10 +110,9 @@ static void putColor(const wchar_t* k, const float* c) {
     WritePrivateProfileStringW(L"visualizer", k, b, iniPath);
 }
 static void saveCfg() {
-    putColor(L"color", cfg.col); putColor(L"glitch_color", cfg.gcol);
-    putInt(L"opacity", cfg.opacity); putInt(L"columns", cfg.cols); putInt(L"rows", cfg.rows); putInt(L"fps", cfg.fps);
-    putInt(L"scanlines", cfg.scan); putInt(L"readouts", cfg.readouts); putInt(L"brackets", cfg.brackets);
-    putInt(L"peaks", cfg.peaks); putInt(L"glitch", cfg.glitch); putInt(L"hide_on_fullscreen", cfg.hideFs);
+    putColor(L"color", cfg.col);
+    putInt(L"opacity", cfg.opacity); putInt(L"columns", cfg.cols); putInt(L"fps", cfg.fps);
+    putInt(L"hide_on_fullscreen", cfg.hideFs);
     putInt(L"always_on_top", cfg.onTop); putInt(L"locked", cfg.locked);
     putInt(L"x", cfg.x); putInt(L"y", cfg.y); putInt(L"w", cfg.w); putInt(L"h", cfg.h);
     iniTime = iniStamp();  // our own write is not an outside edit
@@ -272,47 +257,35 @@ static int setText(unsigned* out, const char* s) {
 
 // ---------------------------------------------------------------- drawing (one pixel shader)
 struct CB {
-    float lv[MAXC], pk[MAXC];
+    float lv[MAXC];
     float accent[4];  // rgb, master opacity
-    float gcol[4];    // glitch rgb, glitch amount
     float dims[4];    // width, height, bars top, bars height
-    float grid[4];    // columns, rows, dpi scale, jitter px
+    float grid[4];    // columns, dpi scale
     float txt[4];     // left text x, right text x, text y, font pixel size
-    float flags[4];   // scanlines, brackets, peaks, text
-    float fx[4];      // glitch line y, unused, unlocked
+    float fx[4];      // unlocked
     unsigned tl[32], tr[32];
     unsigned font[352];
 };
 static CB cb;
-// Cells and outlines are solid: every lit pixel has the same strength, and the opacity setting scales the lot.
+// "Breath": each column is a capsule with round ends, brightest at its top and fading towards its foot.
+// Edges are anti-aliased from the capsule's distance field. The frame and hint text show only while unlocked.
 static const char SHADER[] =
-    "cbuffer C:register(b0){float4 lv[24];float4 pk[24];float4 accent;float4 gcol;float4 dims;float4 grid;"
-    "float4 txt;float4 flags;float4 fx;uint4 tl[8];uint4 tr[8];uint4 font[88];};\n"
+    "cbuffer C:register(b0){float4 lv[24];float4 accent;float4 dims;float4 grid;"
+    "float4 txt;float4 fx;uint4 tl[8];uint4 tr[8];uint4 font[88];};\n"
     "float4 VS(uint id:SV_VertexID):SV_Position{return float4(id==1?3.0:-1.0,id==2?-3.0:1.0,0,1);}\n"
     "float textAt(float2 p,float x0,bool right){float s=txt.w;float lx=p.x-x0,ly=p.y-txt.z;\n"
     " if(lx<0||ly<0||ly>=7*s)return 0;int ci=(int)(lx/(6*s));if(ci>=32)return 0;\n"
     " int cx=(int)((lx-ci*6*s)/s),cy=(int)(ly/s);if(cx>4)return 0;\n"
     " uint g=right?tr[ci>>2][ci&3]:tl[ci>>2][ci&3];uint i=g*8+cy;uint bits=font[i>>2][i&3];\n"
     " return (float)((bits>>(4-cx))&1);}\n"
-    "float4 PS(float4 pos:SV_Position):SV_Target{float2 p=pos.xy;float W=dims.x,H=dims.y,bt=dims.z,bh=dims.w,S=grid.z;\n"
-    " float a=0;float3 col=accent.rgb;float cols=grid.x,rows=grid.y;float th=max(1,floor(S));\n"
-    " if(p.y>=bt&&p.y<bt+bh){float cw=W/cols;float c=min(cols-1,floor(p.x/cw));\n"
-    "  float lx=p.x-c*cw-(fmod(c,7)==3?grid.w:0);float rh=bh/rows;float ly=bt+bh-p.y;\n"
-    "  float r=min(rows-1,floor(ly/rh));float ry=ly-r*rh;float gx=max(1,floor(2*S)),gy=max(1,floor(S));\n"
-    "  if(lx>=gx&&lx<cw-gx&&ry>=gy&&ry<rh-gy){uint ci=(uint)c;float v=lv[ci>>2][ci&3],pv=pk[ci>>2][ci&3];\n"
-    "   float lit=round(v*rows),pr=min(rows-1,round(pv*rows));\n"
-    "   if(r<lit)a=1;\n"
-    "   else if(flags.z>0&&r==pr&&pv>0.04)a=(lx<gx+th||lx>=cw-gx-th||ry<gy+th||ry>=rh-gy-th)?1.0:0.0;\n"
-    "   else a=0.06;}\n"
-    "  if(flags.x>0&&fmod(floor(p.y),3)==0)a*=0.55;}\n"
-    " if(flags.y>0){float t=bt-4*S,L=14*S,m=4*S;\n"
-    "  bool hl=p.y>=t&&p.y<t+th&&((p.x>=m&&p.x<m+L)||(p.x>=W-m-L&&p.x<W-m));\n"
-    "  bool vl=p.y>=t&&p.y<t+L&&((p.x>=m&&p.x<m+th)||(p.x>=W-m-th&&p.x<W-m));\n"
-    "  if(hl||vl)a=1;}\n"
-    " if(flags.w>0){a=max(a,textAt(p,txt.x,false));a=max(a,0.7*textAt(p,txt.y,true));}\n"
-    " if(fx.z>0){bool edge=p.x<th||p.x>=W-th||p.y<th||p.y>=H-th;a=max(a,edge?1.0:0.15);}\n"
-    " if(gcol.a>0.3&&floor(p.y)==floor(fx.x)){col=gcol.rgb;a=max(a,gcol.a);}\n"
-    " a=saturate(a)*accent.a;return float4(col*a,a);}\n";
+    "float4 PS(float4 pos:SV_Position):SV_Target{float2 p=pos.xy;float W=dims.x,H=dims.y,bt=dims.z,bh=dims.w,S=grid.y;\n"
+    " float cols=grid.x,cw=W/cols;float c=clamp(floor(p.x/cw),0,cols-1);uint ci=(uint)c;float v=lv[ci>>2][ci&3];\n"
+    " float bw=max(2*S,cw*0.42),r=bw*0.5,hh=max(bw,v*bh),yb=bt+bh,y0=yb-hh;\n"
+    " float2 q=float2(p.x-(c+0.5)*cw,p.y-clamp(p.y,y0+r,yb-r));\n"
+    " float a=saturate(0.5-(length(q)-r))*lerp(0.55+0.4*v,0.18,saturate((p.y-y0)/hh));\n"
+    " if(fx.x>0){float th=max(1,floor(S));bool edge=p.x<th||p.x>=W-th||p.y<th||p.y>=H-th;a=max(a,edge?1.0:0.12);\n"
+    "  a=max(a,textAt(p,txt.x,false));a=max(a,0.7*textAt(p,txt.y,true));}\n"
+    " a=saturate(a)*accent.a;return float4(accent.rgb*a,a);}\n";
 
 static HWND hwnd;
 static ID3D11Device* dev;
@@ -417,43 +390,17 @@ static bool gfxInit() {
     return ok;
 }
 static void draw(float alpha, double now) {
-    static double lastText = -1; static int rightLen; static int lastLocked = -1;
-    if (now - lastText > 0.25 || lastLocked != cfg.locked) {  // refresh the text four times a second
-        lastText = now; lastLocked = cfg.locked;
-        if (!cfg.locked) {
-            setText(cb.tl, "UNLOCKED - DRAG TO MOVE");
-            rightLen = setText(cb.tr, "DOUBLE-CLICK TO LOCK");
-        } else {
-            setText(cb.tl, fmod(now, 1.0) < 0.5 ? "\x01 MVIZ//SEG" : "\x02 MVIZ//SEG");
-            int best = 0; for (int c = 1; c < cfg.cols; c++) if (an.lv[c] > an.lv[best]) best = c;
-            char b[64], f[16], bp[8];
-            float hz = an.centerHz[best];
-            if (hz < 1000) snprintf(f, 16, "%d HZ", (int)(hz + 0.5f)); else snprintf(f, 16, "%.1f KHZ", hz / 1000);
-            if (an.bpm > 0) snprintf(bp, 8, "%03d", (int)(an.bpm + 0.5f)); else strcpy(bp, "---");
-            snprintf(b, 64, "BPM %s  PK %s  LVL %.0f DB", bp, f, an.rmsDb < -99 ? -99.f : an.rmsDb);
-            rightLen = setText(cb.tr, b);
-        }
-    }
-    // Everything is snapped to the steps the picture can actually show (whole cells, 1/255 opacity),
-    // so an unchanged picture gives identical bytes and the frame is skipped.
-    float R = (float)cfg.rows;
-    bool gl = cfg.glitch && an.glitch > 0.3f;
-    for (int c = 0; c < MAXC; c++) {
-        bool on = c < cfg.cols;
-        cb.lv[c] = on ? floorf(an.lv[c] * R + 0.5f) / R : 0;
-        cb.pk[c] = (on && an.pk[c] > 0.04f) ? fmaxf(0.05f, floorf(an.pk[c] * R + 0.5f) / R) : 0;
-    }
+    static int rightLen;
+    if (!rightLen) { setText(cb.tl, "UNLOCKED - DRAG TO MOVE"); rightLen = setText(cb.tr, "DOUBLE-CLICK TO LOCK"); }
+    // Heights are snapped to whole pixels and opacity to 1/255, so an unchanged picture gives identical
+    // bytes and the frame is skipped.
+    for (int c = 0; c < MAXC; c++) cb.lv[c] = c < cfg.cols ? floorf(an.lv[c] * barsH + 0.5f) / barsH : 0;
     memcpy(cb.accent, cfg.col, 12); cb.accent[3] = floorf(clampf(alpha, 0, 1) * 255 + 0.5f) / 255;
-    memcpy(cb.gcol, cfg.gcol, 12); cb.gcol[3] = gl ? floorf(an.glitch * 8) / 8 : 0;
     cb.dims[0] = (float)winW; cb.dims[1] = (float)winH; cb.dims[2] = barsTop; cb.dims[3] = barsH;
-    cb.grid[0] = (float)cfg.cols; cb.grid[1] = (float)cfg.rows; cb.grid[2] = dpiS;
-    cb.grid[3] = gl ? floorf(((rand() % 7) - 3) * an.glitch * dpiS) : 0;
+    cb.grid[0] = (float)cfg.cols; cb.grid[1] = dpiS;
     cb.txt[0] = floorf(12 * dpiS); cb.txt[1] = winW - floorf(12 * dpiS) - rightLen * 6 * fontPx;
     cb.txt[2] = floorf(3 * dpiS); cb.txt[3] = fontPx;
-    cb.flags[0] = (float)cfg.scan; cb.flags[1] = (float)cfg.brackets; cb.flags[2] = (float)cfg.peaks;
-    cb.flags[3] = (cfg.readouts || !cfg.locked) ? 1.f : 0.f;
-    cb.fx[0] = gl ? barsTop + barsH * (0.2f + 0.6f * (rand() % 100) / 100.f) : 0;
-    cb.fx[2] = cfg.locked ? 0.f : 1.f;
+    cb.fx[0] = cfg.locked ? 0.f : 1.f;
     static CB shownCb;
     if (!forceDraw && !memcmp(&cb, &shownCb, sizeof(cb))) return;
     if (!rtv || !cbuf) return;
@@ -611,10 +558,9 @@ static LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 // ---------------------------------------------------------------- settings window
-enum { ID_COL = 10, ID_GCOL, ID_SW_COL, ID_SW_GCOL, ID_OPA, ID_COLS, ID_ROWS, ID_FPS, ID_SCAN, ID_READ, ID_BRACK,
-       ID_PEAK, ID_GLITCH, ID_HIDEFS, ID_ONTOP, ID_LOCK, ID_RESET, ID_CLOSE, ID_AUTOSTART, ID_VAL = 100 };
+enum { ID_COL = 10, ID_SW_COL, ID_OPA, ID_COLS, ID_FPS, ID_HIDEFS, ID_ONTOP, ID_LOCK, ID_RESET, ID_CLOSE, ID_AUTOSTART, ID_VAL = 100 };
 static HFONT uiFont;
-static HBRUSH brCol, brGcol;
+static HBRUSH brCol;
 static int sx(int v) { return MulDiv(v, GetDpiForSystem(), 96); }
 static HBRUSH brushOf(const float* c) { return CreateSolidBrush(RGB((int)(c[0] * 255 + .5f), (int)(c[1] * 255 + .5f), (int)(c[2] * 255 + .5f))); }
 static HWND ctl(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id) {
@@ -661,13 +607,12 @@ static LRESULT CALLBACK setProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CTLCOLORSTATIC: {
         int id = GetDlgCtrlID((HWND)lp);
         if (id == ID_SW_COL) return (LRESULT)brCol;
-        if (id == ID_SW_GCOL) return (LRESULT)brGcol;
         break;
     }
     case WM_HSCROLL: {  // sliders apply live and save when released
         HWND t = (HWND)lp; int id = GetDlgCtrlID(t), v = (int)SendMessageW(t, TBM_GETPOS, 0, 0);
         if (id == ID_OPA) cfg.opacity = v; else if (id == ID_COLS) cfg.cols = v;
-        else if (id == ID_ROWS) cfg.rows = v; else if (id == ID_FPS) cfg.fps = v; else break;
+        else if (id == ID_FPS) cfg.fps = v; else break;
         wchar_t b[8]; wsprintfW(b, L"%d", v);
         SetDlgItemTextW(h, ID_VAL + id, b);
         layoutDirty = true;
@@ -678,12 +623,6 @@ static LRESULT CALLBACK setProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         int id = LOWORD(wp), on = IsDlgButtonChecked(h, id) == BST_CHECKED;
         switch (id) {
         case ID_COL: pickColor(cfg.col, &brCol, ID_SW_COL); return 0;
-        case ID_GCOL: pickColor(cfg.gcol, &brGcol, ID_SW_GCOL); return 0;
-        case ID_SCAN: cfg.scan = on; break;
-        case ID_READ: cfg.readouts = on; break;
-        case ID_BRACK: cfg.brackets = on; break;
-        case ID_PEAK: cfg.peaks = on; break;
-        case ID_GLITCH: cfg.glitch = on; break;
         case ID_HIDEFS: cfg.hideFs = on; break;
         case ID_ONTOP: cfg.onTop = on; applyWindow(); break;
         case ID_LOCK: setLocked(on); return 0;
@@ -720,10 +659,10 @@ static void openSettings() {
         wc.hIcon = appIcon(GetSystemMetrics(SM_CXICON)); wc.hIconSm = appIcon(GetSystemMetrics(SM_CXSMICON));
         RegisterClassExW(&wc);
     }
-    if (brCol) DeleteObject(brCol); if (brGcol) DeleteObject(brGcol);
-    brCol = brushOf(cfg.col); brGcol = brushOf(cfg.gcol);
+    if (brCol) DeleteObject(brCol);
+    brCol = brushOf(cfg.col);
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT r = {0, 0, sx(356), sx(446)};
+    RECT r = {0, 0, sx(356), sx(318)};
     AdjustWindowRect(&r, style, FALSE);
     setWnd = CreateWindowExW(0, L"MusicVisualizerSettings", L"Music Visualizer settings", style, CW_USEDEFAULT, CW_USEDEFAULT,
                              r.right - r.left, r.bottom - r.top, 0, 0, inst, 0);
@@ -731,25 +670,16 @@ static void openSettings() {
     ctl(L"STATIC", L"Colour", 0, 16, 18, 92, 20, -1);
     ctl(L"STATIC", L"", 0, 112, 15, 60, 24, ID_SW_COL);
     ctl(L"BUTTON", L"Choose...", WS_TABSTOP, 182, 14, 90, 26, ID_COL);
-    ctl(L"STATIC", L"Glitch colour", 0, 16, 50, 92, 20, -1);
-    ctl(L"STATIC", L"", 0, 112, 47, 60, 24, ID_SW_GCOL);
-    ctl(L"BUTTON", L"Choose...", WS_TABSTOP, 182, 46, 90, 26, ID_GCOL);
-    slider(L"Opacity %", 86, ID_OPA, 10, 100, cfg.opacity);
-    slider(L"Columns", 118, ID_COLS, 8, MAXC, cfg.cols);
-    slider(L"Rows", 150, ID_ROWS, 4, 16, cfg.rows);
-    slider(L"Frames / sec", 182, ID_FPS, 15, 60, cfg.fps);
-    check(L"Lock position", 16, 222, ID_LOCK, cfg.locked);
-    check(L"Always on top", 184, 222, ID_ONTOP, cfg.onTop);
-    check(L"Readouts", 16, 248, ID_READ, cfg.readouts);
-    check(L"Peak markers", 184, 248, ID_PEAK, cfg.peaks);
-    check(L"Brackets", 16, 274, ID_BRACK, cfg.brackets);
-    check(L"Beat glitch", 184, 274, ID_GLITCH, cfg.glitch);
-    check(L"Scanlines", 16, 300, ID_SCAN, cfg.scan);
-    check(L"Hide on fullscreen", 184, 300, ID_HIDEFS, cfg.hideFs);
-    check(L"Start with Windows", 16, 326, ID_AUTOSTART, autostartOn());
-    ctl(L"BUTTON", L"Reset position", WS_TABSTOP, 16, 362, 130, 28, ID_RESET);
-    ctl(L"BUTTON", L"Close", WS_TABSTOP, 250, 362, 90, 28, ID_CLOSE);
-    HWND note = ctl(L"STATIC", L"Version " APP_VERSION L". Sound is analysed on this PC only. Nothing is recorded or sent anywhere.", 0, 16, 402, 324, 36, -1);
+    slider(L"Opacity %", 54, ID_OPA, 10, 100, cfg.opacity);
+    slider(L"Columns", 86, ID_COLS, 8, MAXC, cfg.cols);
+    slider(L"Frames / sec", 118, ID_FPS, 15, 60, cfg.fps);
+    check(L"Lock position", 16, 158, ID_LOCK, cfg.locked);
+    check(L"Always on top", 184, 158, ID_ONTOP, cfg.onTop);
+    check(L"Start with Windows", 16, 184, ID_AUTOSTART, autostartOn());
+    check(L"Hide on fullscreen", 184, 184, ID_HIDEFS, cfg.hideFs);
+    ctl(L"BUTTON", L"Reset position", WS_TABSTOP, 16, 226, 130, 28, ID_RESET);
+    ctl(L"BUTTON", L"Close", WS_TABSTOP, 250, 226, 90, 28, ID_CLOSE);
+    HWND note = ctl(L"STATIC", L"Version " APP_VERSION L". Sound is analysed on this PC only. Nothing is recorded or sent anywhere.", 0, 16, 272, 324, 36, -1);
     EnableWindow(note, FALSE);  // greyed: it is a footnote
     ShowWindow(setWnd, SW_SHOW);
     SetForegroundWindow(setWnd);
@@ -822,7 +752,7 @@ static double tick() {
     if (gfxLost) return 0.25;
     if (!want && vis < 0.004f) {  // faded out: draw one empty frame, then stop drawing
         vis = 0; draw(0, t); active = false;
-        memset(an.lv, 0, sizeof(an.lv)); memset(an.pk, 0, sizeof(an.pk));
+        memset(an.lv, 0, sizeof(an.lv));
         return -1;
     }
     draw(vis * cfg.opacity / 100.f, t);
