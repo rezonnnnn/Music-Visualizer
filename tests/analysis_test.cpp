@@ -30,11 +30,10 @@ int main(int argc, char** argv) {
     const short* pcm = (const short*)(d + dataAt);
 
     an.init(columns, rate);
-    int packet = rate / 100, beats = 0; float prevGlitch = 0;
+    int packet = rate / 100;
     double frameEvery = rate / 60.0, nextFrame = frameEvery;
     static float mono[4096];
-    printf("{\"bpm_series\":[");
-    int lastSecond = 0;
+    static float prev[mv::MAXC]; float maxStep = 0, top = 0;  // biggest change of any column in one frame; tallest column seen
     for (long i = 0; i < frames; i += packet) {
         int n = (int)(frames - i < packet ? frames - i : packet);
         for (int k = 0; k < n; k++) {
@@ -42,15 +41,16 @@ int main(int argc, char** argv) {
             mono[k] = m / chans;
         }
         an.feed(mono, n);
-        if (an.glitch == 1 && prevGlitch < 1) beats++;
-        prevGlitch = an.glitch;
         while (i + n >= nextFrame) {
             an.frame(1 / 60.f, true);
-            prevGlitch = an.glitch;
+            for (int c = 0; c < columns; c++) {
+                float d = an.lv[c] - prev[c]; if (d < 0) d = -d;
+                if (d > maxStep) maxStep = d;
+                if (an.lv[c] > top) top = an.lv[c];
+                prev[c] = an.lv[c];
+            }
             nextFrame += frameEvery;
         }
-        int sec = (int)((i + n) / rate);
-        if (sec != lastSecond) { printf("%s%.1f", lastSecond ? "," : "", an.bpm); lastSecond = sec; }
     }
     int best = 0; float lo = 1, hi = 0;
     for (int c = 0; c < columns; c++) {
@@ -58,8 +58,8 @@ int main(int argc, char** argv) {
         if (an.lv[c] < lo) lo = an.lv[c];
         if (an.lv[c] > hi) hi = an.lv[c];
     }
-    printf("],\"bpm\":%.2f,\"beats\":%d,\"seconds\":%.2f,\"peak_col\":%d,\"peak_hz\":%.1f,\"lv_max\":%.3f,\"lv_min\":%.3f,\"rms_db\":%.1f,\"lv\":[",
-           an.bpm, beats, (double)frames / rate, best, an.centerHz[best], hi, lo, an.rmsDb);
+    printf("{\"seconds\":%.2f,\"peak_col\":%d,\"peak_hz\":%.1f,\"lv_max\":%.3f,\"lv_min\":%.3f,\"lv_top\":%.3f,\"max_step\":%.3f,\"lv\":[",
+           (double)frames / rate, best, an.centerHz[best], hi, lo, top, maxStep);
     for (int c = 0; c < columns; c++) printf("%s%.3f", c ? "," : "", an.lv[c]);
     printf("]}\n");
     return 0;

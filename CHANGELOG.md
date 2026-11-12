@@ -9,6 +9,7 @@ A new look: smooth and minimal.
 - **Quieter defaults**: a soft white at full opacity, 32 columns. Any colour still works.
 - **Simpler settings**: rows, scanlines, readouts, brackets, peak markers, beat glitch and the glitch colour are gone with the old look. Old `settings.ini` files keep working; the unused lines are ignored.
 - **Only the bars**: no frame, no background, no text, locked or unlocked. Unlocked and silent, it shows a row of dots so you can find and place it.
+- **Leaner inside**: tempo detection, beat pulses and the level readout are removed; nothing displayed them any more.
 - No download yet: releases are paused until they are signed.
 
 ## 0.3.0

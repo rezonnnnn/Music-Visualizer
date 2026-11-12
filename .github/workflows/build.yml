@@ -40,7 +40,7 @@ jobs:
           call build.cmd || exit /b 1
           zig c++ -target x86_64-windows-gnu -O2 -fno-exceptions -fno-rtti tests/analysis_test.cpp -o build/analysis_test.exe || exit /b 1
 
-      - name: Analysis tests (tempo, columns, level)
+      - name: Analysis tests (bar heights, motion, columns)
         shell: pwsh
         run: |
           python -m pip install --quiet numpy
